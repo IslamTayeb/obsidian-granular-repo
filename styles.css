@@ -1,0 +1,9 @@
+.vault-publisher-empty {
+  color: var(--text-muted);
+}
+
+.vault-publisher-visibility-buttons {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}

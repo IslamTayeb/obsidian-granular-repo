@@ -1,0 +1,9 @@
+{
+  "id": "vault-publisher",
+  "name": "Vault Publisher",
+  "version": "0.1.0",
+  "minAppVersion": "1.5.0",
+  "description": "Publish vault subdirectories as independent GitHub repositories and push all repos from within Obsidian.",
+  "author": "Vault Publisher",
+  "isDesktopOnly": true
+}
