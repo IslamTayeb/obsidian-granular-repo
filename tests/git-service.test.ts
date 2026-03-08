@@ -184,4 +184,43 @@ describe("GitService", () => {
     expect(summary.failed).toBe(0);
     expect(summary.results[0].originUrl).toBe("https://github.com/user/alpha.git");
   });
+
+  it("links local repo without origin even when no commits exist", async () => {
+    const runner = vi.fn<ExecRunner>(async (command, args) => {
+      const key = commandKey(command, args);
+      if (key === "git diff --cached --name-only") {
+        return { stdout: "", stderr: "" };
+      }
+      if (key === "gh repo create alpha --private --source=. --push") {
+        throw {
+          message: "no commits",
+          stderr: "failed to run git: ambiguous argument 'HEAD'",
+          stdout: "",
+          code: 1,
+        };
+      }
+      if (key === "gh repo create alpha --private --source=. --remote=origin") {
+        return { stdout: "", stderr: "" };
+      }
+      if (key === "git rev-parse --verify HEAD") {
+        throw {
+          message: "no commits",
+          stderr: "fatal: Needed a single revision",
+          stdout: "",
+          code: 128,
+        };
+      }
+      if (key === "git remote get-url origin") {
+        return { stdout: "https://github.com/user/alpha.git\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const service = new GitService(runner);
+    const linked = await service.linkLocalRepoWithoutOrigin("/tmp/repo", "alpha", "alpha", "private");
+
+    expect(linked.repoName).toBe("alpha");
+    expect(linked.pushed).toBe(false);
+    expect(linked.originUrl).toBe("https://github.com/user/alpha.git");
+  });
 });

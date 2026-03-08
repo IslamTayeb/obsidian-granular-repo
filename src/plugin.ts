@@ -225,23 +225,18 @@ export default class VaultPublisherPlugin extends Plugin {
 
     try {
       await this.gitService.ensureGitignore(targetPath);
-      let repoName = baseRepoName;
-      let originUrl: string | null = null;
-
       if (!repoState.hasLocalGit) {
         await this.gitService.initRepo(targetPath);
-        repoName = await this.gitService.createRepoWithAutoName(targetPath, baseRepoName, visibility);
-        originUrl = await this.gitService.getOriginUrl(targetPath);
-      } else {
-        const linked = await this.gitService.linkLocalRepoWithoutOrigin(
-          targetPath,
-          folderName,
-          baseRepoName,
-          visibility,
-        );
-        repoName = linked.repoName;
-        originUrl = linked.originUrl;
       }
+
+      const linked = await this.gitService.linkLocalRepoWithoutOrigin(
+        targetPath,
+        folderName,
+        baseRepoName,
+        visibility,
+      );
+      const repoName = linked.repoName;
+      const originUrl = linked.originUrl;
 
       const record: PublishedDirRecord = {
         vaultPath,
@@ -255,7 +250,8 @@ export default class VaultPublisherPlugin extends Plugin {
       await this.configStore.save();
 
       const repoUrl = originUrl ? originToWebUrl(originUrl) ?? originUrl : `https://github.com/${repoName}`;
-      new Notice(`Published ${vaultPath} -> ${repoUrl}`, 8000);
+      const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
+      new Notice(`Published ${vaultPath} -> ${repoUrl}${suffix}`, 8000);
     } catch (error: unknown) {
       this.showCommandError(error);
     }
