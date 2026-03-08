@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import process from "node:process";
 import { promisify } from "node:util";
 
 import { PrerequisiteStatus, PushAllSummary, PushRepoResult, RepoState, RepoVisibility } from "../types";
@@ -113,12 +114,37 @@ function errorFromUnknown(
   });
 }
 
+function buildAugmentedPath(): string {
+  const delimiter = path.delimiter;
+  const basePath = process.env.PATH ?? "";
+
+  const candidates =
+    process.platform === "win32"
+      ? []
+      : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+  const existingSegments = basePath.split(delimiter).filter((segment) => segment.length > 0);
+  const merged = [...existingSegments];
+
+  for (const candidate of candidates) {
+    if (!merged.includes(candidate)) {
+      merged.push(candidate);
+    }
+  }
+
+  return merged.join(delimiter);
+}
+
 const defaultRunner: ExecRunner = async (command, args, options) => {
   const result = await execFileAsync(command, args, {
     cwd: options?.cwd,
     windowsHide: true,
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf8",
+    env: {
+      ...process.env,
+      PATH: buildAugmentedPath(),
+    },
   });
 
   return {
@@ -194,7 +220,7 @@ export class GitService {
         return {
           ok: false,
           message:
-            "GitHub CLI (gh) not found or not authenticated. Run `gh auth login` in your terminal.",
+            "GitHub CLI (gh) not found in Obsidian. Ensure gh is installed and restart Obsidian; if needed run `gh auth login` in terminal.",
         };
       }
 

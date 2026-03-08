@@ -124,6 +124,7 @@ var import_node_child_process = require("node:child_process");
 var import_node_fs = __toESM(require("node:fs"), 1);
 var import_promises = __toESM(require("node:fs/promises"), 1);
 var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_process = __toESM(require("node:process"), 1);
 var import_node_util = require("node:util");
 
 // src/utils/commit-message.ts
@@ -248,12 +249,29 @@ function errorFromUnknown(error, command, args, cwd) {
     message: candidate.message
   });
 }
+function buildAugmentedPath() {
+  const delimiter = import_node_path2.default.delimiter;
+  const basePath = import_node_process.default.env.PATH ?? "";
+  const candidates = import_node_process.default.platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  const existingSegments = basePath.split(delimiter).filter((segment) => segment.length > 0);
+  const merged = [...existingSegments];
+  for (const candidate of candidates) {
+    if (!merged.includes(candidate)) {
+      merged.push(candidate);
+    }
+  }
+  return merged.join(delimiter);
+}
 var defaultRunner = async (command, args, options) => {
   const result = await execFileAsync(command, args, {
     cwd: options?.cwd,
     windowsHide: true,
     maxBuffer: 10 * 1024 * 1024,
-    encoding: "utf8"
+    encoding: "utf8",
+    env: {
+      ...import_node_process.default.env,
+      PATH: buildAugmentedPath()
+    }
   });
   return {
     stdout: result.stdout,
@@ -310,7 +328,7 @@ var GitService = class {
       if (commandError.systemCode === "ENOENT") {
         return {
           ok: false,
-          message: "GitHub CLI (gh) not found or not authenticated. Run `gh auth login` in your terminal."
+          message: "GitHub CLI (gh) not found in Obsidian. Ensure gh is installed and restart Obsidian; if needed run `gh auth login` in terminal."
         };
       }
       return {
