@@ -161,4 +161,27 @@ describe("GitService", () => {
     expect(summary.pushed).toBe(1);
     expect(summary.failed).toBe(1);
   });
+
+  it("push-all auto-links repos with no origin to GitHub", async () => {
+    const service = new GitService(async () => ({ stdout: "", stderr: "" }));
+
+    vi.spyOn(service, "findStandaloneRepos").mockResolvedValue(["alpha"]);
+    vi.spyOn(service, "detectRepoState").mockResolvedValue({
+      hasLocalGit: true,
+      hasOrigin: false,
+      isGitHubOrigin: false,
+    });
+    vi.spyOn(service, "linkLocalRepoWithoutOrigin").mockResolvedValue({
+      repoName: "alpha",
+      originUrl: "https://github.com/user/alpha.git",
+      pushed: true,
+    });
+
+    const summary = await service.pushAllRepos("/vault");
+
+    expect(summary.total).toBe(1);
+    expect(summary.pushed).toBe(1);
+    expect(summary.failed).toBe(0);
+    expect(summary.results[0].originUrl).toBe("https://github.com/user/alpha.git");
+  });
 });

@@ -203,14 +203,18 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      await this.handleFirstPublish(selectedVaultPath, targetPath);
+      await this.handleFirstPublish(selectedVaultPath, targetPath, repoState);
       return;
     }
 
     await this.handleRepeatPublish(selectedVaultPath, targetPath, repoState.originUrl ?? null);
   }
 
-  private async handleFirstPublish(vaultPath: string, targetPath: string): Promise<void> {
+  private async handleFirstPublish(
+    vaultPath: string,
+    targetPath: string,
+    repoState: { hasLocalGit: boolean; hasOrigin: boolean },
+  ): Promise<void> {
     const visibility = await new VisibilityModal(this.app).openAndGetValue();
     if (!visibility) {
       return;
@@ -221,9 +225,23 @@ export default class VaultPublisherPlugin extends Plugin {
 
     try {
       await this.gitService.ensureGitignore(targetPath);
-      await this.gitService.initRepo(targetPath);
-      const repoName = await this.gitService.createRepoWithAutoName(targetPath, baseRepoName, visibility);
-      const originUrl = await this.gitService.getOriginUrl(targetPath);
+      let repoName = baseRepoName;
+      let originUrl: string | null = null;
+
+      if (!repoState.hasLocalGit) {
+        await this.gitService.initRepo(targetPath);
+        repoName = await this.gitService.createRepoWithAutoName(targetPath, baseRepoName, visibility);
+        originUrl = await this.gitService.getOriginUrl(targetPath);
+      } else {
+        const linked = await this.gitService.linkLocalRepoWithoutOrigin(
+          targetPath,
+          folderName,
+          baseRepoName,
+          visibility,
+        );
+        repoName = linked.repoName;
+        originUrl = linked.originUrl;
+      }
 
       const record: PublishedDirRecord = {
         vaultPath,
@@ -293,7 +311,11 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
-    const summary = await this.gitService.pushAllRepos(vaultBasePath);
+    const summary = await this.gitService.pushAllRepos(vaultBasePath, {
+      resolveVisibility: (vaultPath) => this.configStore.findByVaultPath(vaultPath)?.visibility ?? "private",
+      resolveBaseRepoName: (vaultPath) =>
+        this.configStore.findByVaultPath(vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath),
+    });
 
     if (summary.total === 0) {
       new Notice("No standalone git repositories found in vault subdirectories.");

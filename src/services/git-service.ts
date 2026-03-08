@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import { PrerequisiteStatus, PushAllSummary, PushRepoResult, RepoState, RepoVisibility } from "../types";
 import { buildCommitMessage } from "../utils/commit-message";
 import { isGitHubOrigin } from "../utils/github-url";
-import { repoNameCandidates } from "../utils/repo-name-utils";
+import { repoNameCandidates, sanitizeRepoName } from "../utils/repo-name-utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,6 +27,11 @@ export type ExecRunner = (
   args: string[],
   options?: RunnerOptions,
 ) => Promise<RunnerResult>;
+
+export interface PushAllOptions {
+  resolveVisibility?: (vaultPath: string) => RepoVisibility;
+  resolveBaseRepoName?: (vaultPath: string) => string;
+}
 
 export class GitCommandError extends Error {
   readonly command: string;
@@ -134,6 +139,17 @@ function isRepoNameTakenError(error: GitCommandError): boolean {
 function isNoUpstreamPushError(error: GitCommandError): boolean {
   const output = `${error.stderr}\n${error.stdout}`.toLowerCase();
   return output.includes("no upstream branch") || output.includes("set-upstream");
+}
+
+function isNoCommitsError(error: GitCommandError): boolean {
+  const output = `${error.stderr}\n${error.stdout}`.toLowerCase();
+  return (
+    output.includes("no commits yet") ||
+    output.includes("head does not match any") ||
+    output.includes("src refspec head does not match any") ||
+    output.includes("ambiguous argument 'head'") ||
+    output.includes("you need at least one commit")
+  );
 }
 
 export class GitService {
@@ -254,13 +270,22 @@ export class GitService {
     await this.run("git", ["init"], targetDir);
   }
 
-  async createGitHubRepo(targetDir: string, repoName: string, visibility: RepoVisibility): Promise<void> {
+  async createGitHubRepo(
+    targetDir: string,
+    repoName: string,
+    visibility: RepoVisibility,
+    options?: { push?: boolean; remoteName?: string },
+  ): Promise<void> {
     const visibilityFlag = visibility === "public" ? "--public" : "--private";
-    await this.run(
-      "gh",
-      ["repo", "create", repoName, visibilityFlag, "--source=.", "--push"],
-      targetDir,
-    );
+    const args = ["repo", "create", repoName, visibilityFlag, "--source=."];
+    if (options?.remoteName) {
+      args.push(`--remote=${options.remoteName}`);
+    }
+    if (options?.push ?? true) {
+      args.push("--push");
+    }
+
+    await this.run("gh", args, targetDir);
   }
 
   async createRepoWithAutoName(
@@ -268,12 +293,13 @@ export class GitService {
     baseRepoName: string,
     visibility: RepoVisibility,
     maxAttempts = 50,
+    options?: { push?: boolean; remoteName?: string },
   ): Promise<string> {
     const candidates = repoNameCandidates(baseRepoName, maxAttempts);
 
     for (const candidate of candidates) {
       try {
-        await this.createGitHubRepo(targetDir, candidate, visibility);
+        await this.createGitHubRepo(targetDir, candidate, visibility, options);
         return candidate;
       } catch (error: unknown) {
         const commandError = errorFromUnknown(error, "gh", ["repo", "create"], targetDir);
@@ -306,14 +332,34 @@ export class GitService {
     await this.run("git", ["commit", "-m", message], targetDir);
   }
 
-  async push(targetDir: string): Promise<void> {
+  async hasAnyCommit(targetDir: string): Promise<boolean> {
+    try {
+      await this.run("git", ["rev-parse", "--verify", "HEAD"], targetDir);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async getAheadCommitCount(targetDir: string): Promise<number | null> {
+    try {
+      const result = await this.run("git", ["rev-list", "--count", "@{u}..HEAD"], targetDir);
+      const count = Number.parseInt(result.stdout.trim(), 10);
+      return Number.isNaN(count) ? 0 : count;
+    } catch {
+      return null;
+    }
+  }
+
+  async push(targetDir: string): Promise<{ usedUpstreamFallback: boolean }> {
     try {
       await this.run("git", ["push"], targetDir);
+      return { usedUpstreamFallback: false };
     } catch (error: unknown) {
       const commandError = errorFromUnknown(error, "git", ["push"], targetDir);
       if (isNoUpstreamPushError(commandError)) {
         await this.run("git", ["push", "-u", "origin", "HEAD"], targetDir);
-        return;
+        return { usedUpstreamFallback: true };
       }
 
       throw commandError;
@@ -330,24 +376,68 @@ export class GitService {
     }
   }
 
+  async linkLocalRepoWithoutOrigin(
+    targetDir: string,
+    folderName: string,
+    baseRepoName: string,
+    visibility: RepoVisibility,
+  ): Promise<{ repoName: string; originUrl: string | null; pushed: boolean }> {
+    await this.stageAll(targetDir);
+    const stagedFiles = await this.getStagedFiles(targetDir);
+    if (stagedFiles.length > 0) {
+      await this.commit(targetDir, buildCommitMessage(folderName));
+    }
+
+    try {
+      const repoName = await this.createRepoWithAutoName(targetDir, baseRepoName, visibility, 50, {
+        push: true,
+      });
+      const originUrl = await this.getOriginUrl(targetDir);
+      return { repoName, originUrl, pushed: true };
+    } catch (error: unknown) {
+      const commandError = errorFromUnknown(error, "gh", ["repo", "create"], targetDir);
+      if (!isNoCommitsError(commandError)) {
+        throw commandError;
+      }
+    }
+
+    const repoName = await this.createRepoWithAutoName(targetDir, baseRepoName, visibility, 50, {
+      push: false,
+      remoteName: "origin",
+    });
+    const originUrl = await this.getOriginUrl(targetDir);
+
+    if (await this.hasAnyCommit(targetDir)) {
+      await this.push(targetDir);
+      return { repoName, originUrl, pushed: true };
+    }
+
+    return { repoName, originUrl, pushed: false };
+  }
+
   async pushDirectory(targetDir: string, folderName: string): Promise<Omit<PushRepoResult, "vaultPath">> {
     try {
       await this.stageAll(targetDir);
       const stagedFiles = await this.getStagedFiles(targetDir);
+      if (stagedFiles.length > 0) {
+        await this.commit(targetDir, buildCommitMessage(folderName));
+      }
 
-      if (stagedFiles.length === 0) {
+      const aheadCount = await this.getAheadCommitCount(targetDir);
+      const { usedUpstreamFallback } = await this.push(targetDir);
+
+      const changedCount = stagedFiles.length;
+      const didPushChanges = changedCount > 0 || (aheadCount !== null && aheadCount > 0) || usedUpstreamFallback;
+      if (!didPushChanges) {
         return {
           status: "up_to_date",
           changedCount: 0,
         };
       }
 
-      await this.commit(targetDir, buildCommitMessage(folderName));
-      await this.push(targetDir);
-
       return {
         status: "pushed",
-        changedCount: stagedFiles.length,
+        changedCount,
       };
     } catch (error: unknown) {
       const commandError = errorFromUnknown(error, "git", ["commit"], targetDir);
@@ -406,31 +496,46 @@ export class GitService {
     return [...repositories].sort((left, right) => left.localeCompare(right));
   }
 
-  async pushAllRepos(vaultBasePath: string): Promise<PushAllSummary> {
+  async pushAllRepos(vaultBasePath: string, options?: PushAllOptions): Promise<PushAllSummary> {
     const repoPaths = await this.findStandaloneRepos(vaultBasePath);
     const results: PushRepoResult[] = [];
 
     for (const vaultPath of repoPaths) {
       const absolutePath = path.join(vaultBasePath, vaultPath);
+      const folderName = path.posix.basename(vaultPath);
       const repoState = await this.detectRepoState(absolutePath);
 
       if (!repoState.hasOrigin) {
-        results.push({
-          vaultPath,
-          status: "skipped",
-          error: "No origin remote configured.",
-        });
+        try {
+          const visibility = options?.resolveVisibility?.(vaultPath) ?? "private";
+          const configuredBaseName = options?.resolveBaseRepoName?.(vaultPath);
+          const baseRepoName = sanitizeRepoName(configuredBaseName ?? folderName);
+
+          const linked = await this.linkLocalRepoWithoutOrigin(
+            absolutePath,
+            folderName,
+            baseRepoName,
+            visibility,
+          );
+
+          results.push({
+            vaultPath,
+            status: linked.pushed ? "pushed" : "up_to_date",
+            originUrl: linked.originUrl ?? undefined,
+          });
+        } catch (error: unknown) {
+          const commandError = errorFromUnknown(error, "gh", ["repo", "create"], absolutePath);
+          results.push({
+            vaultPath,
+            status: "failed",
+            error: commandError.displayMessage(),
+          });
+        }
         continue;
       }
 
-      const folderName = path.posix.basename(vaultPath);
       const result = await this.pushDirectory(absolutePath, folderName);
-
-      results.push({
-        ...result,
-        vaultPath,
-        originUrl: repoState.originUrl,
-      });
+      results.push({ ...result, vaultPath, originUrl: repoState.originUrl });
     }
 
     const summary: PushAllSummary = {
