@@ -13,6 +13,7 @@ import { repoNameCandidates, sanitizeRepoName } from "../utils/repo-name-utils";
 const execFileAsync = promisify(execFile);
 
 const GITIGNORE_DEFAULTS = ".obsidian/\n.trash/\n.DS_Store\nThumbs.db\n";
+const COMMAND_TIMEOUT_MS = 120_000;
 
 type RunnerOptions = {
   cwd?: string;
@@ -141,6 +142,7 @@ const defaultRunner: ExecRunner = async (command, args, options) => {
     windowsHide: true,
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf8",
+    timeout: COMMAND_TIMEOUT_MS,
     env: {
       ...process.env,
       PATH: buildAugmentedPath(),

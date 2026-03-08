@@ -5,7 +5,7 @@ import { App, Notice, Plugin, TFile, TFolder } from "obsidian";
 import { ConfigStore } from "./services/config-store";
 import { GitCommandError, GitService } from "./services/git-service";
 import { VisibilityModal } from "./modals/visibility-modal";
-import { DirectoryPickerModal } from "./modals/directory-picker-modal";
+import { DirectoryPickerModal, PublishTargetItem } from "./modals/directory-picker-modal";
 import { PublishedDirRecord } from "./types";
 import { isGitHubOrigin, originToWebUrl } from "./utils/github-url";
 import {
@@ -83,6 +83,8 @@ export default class VaultPublisherPlugin extends Plugin {
     this.isRunning = true;
     try {
       await action();
+    } catch (error: unknown) {
+      this.showCommandError(error);
     } finally {
       this.isRunning = false;
     }
@@ -108,13 +110,46 @@ export default class VaultPublisherPlugin extends Plugin {
     return parentPath;
   }
 
-  private listSelectableDirectories(): string[] {
-    return this.app.vault
-      .getAllLoadedFiles()
-      .filter((item): item is TFolder => item instanceof TFolder)
-      .map((folder) => normalizeVaultPath(folder.path))
-      .filter((folderPath) => this.isSelectableDirectory(folderPath))
-      .sort((left, right) => left.localeCompare(right));
+  private listSelectableTargets(): PublishTargetItem[] {
+    const allItems = this.app.vault.getAllLoadedFiles();
+    const targets: PublishTargetItem[] = [];
+
+    for (const item of allItems) {
+      const normalizedPath = normalizeVaultPath(item.path);
+      if (!normalizedPath) {
+        continue;
+      }
+
+      if (item instanceof TFolder) {
+        if (!this.isSelectableDirectory(normalizedPath)) {
+          continue;
+        }
+        targets.push({ path: normalizedPath, kind: "directory" });
+        continue;
+      }
+
+      if (item instanceof TFile) {
+        if (!this.isSelectableFile(normalizedPath)) {
+          continue;
+        }
+        targets.push({ path: normalizedPath, kind: "file" });
+      }
+    }
+
+    targets.sort((left, right) => {
+      if (left.path === this.getActiveDefaultDirectory()) {
+        return -1;
+      }
+      if (right.path === this.getActiveDefaultDirectory()) {
+        return 1;
+      }
+      if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+      }
+      return left.path.localeCompare(right.path);
+    });
+
+    return targets;
   }
 
   private isSelectableDirectory(vaultPath: string): boolean {
@@ -135,22 +170,40 @@ export default class VaultPublisherPlugin extends Plugin {
     return true;
   }
 
+  private isSelectableFile(vaultPath: string): boolean {
+    const normalized = normalizeVaultPath(vaultPath);
+    if (!normalized) {
+      return false;
+    }
+
+    const segments = normalized.split("/");
+    if (segments.some((segment) => segment.startsWith("."))) {
+      return false;
+    }
+
+    if (segments.includes("node_modules")) {
+      return false;
+    }
+
+    return true;
+  }
+
   private async chooseDirectory(): Promise<string | null> {
-    const selectableDirectories = this.listSelectableDirectories();
-    if (selectableDirectories.length === 0) {
-      new Notice("No publishable subdirectories were found in this vault.");
+    const selectableTargets = this.listSelectableTargets();
+    if (selectableTargets.length === 0) {
+      new Notice("No publishable files or subdirectories were found in this vault.");
       return null;
     }
 
     const defaultPath = this.getActiveDefaultDirectory();
-    const modal = new DirectoryPickerModal(this.app, selectableDirectories, defaultPath);
-    const selectedPath = await modal.openAndGetValue();
+    const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultPath);
+    const selected = await modal.openAndGetValue();
 
-    if (!selectedPath) {
+    if (!selected) {
       return null;
     }
 
-    return this.resolveDirectoryPath(selectedPath);
+    return this.resolveDirectoryPath(selected.path);
   }
 
   private resolveDirectoryPath(selection: string): string {

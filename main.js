@@ -205,6 +205,7 @@ function parseRepoNameFromOrigin(originUrl) {
 // src/services/git-service.ts
 var execFileAsync = (0, import_node_util.promisify)(import_node_child_process.execFile);
 var GITIGNORE_DEFAULTS = ".obsidian/\n.trash/\n.DS_Store\nThumbs.db\n";
+var COMMAND_TIMEOUT_MS = 12e4;
 var GitCommandError = class extends Error {
   constructor(params) {
     super(params.message ?? `${params.command} ${params.args.join(" ")} failed`);
@@ -268,6 +269,7 @@ var defaultRunner = async (command, args, options) => {
     windowsHide: true,
     maxBuffer: 10 * 1024 * 1024,
     encoding: "utf8",
+    timeout: COMMAND_TIMEOUT_MS,
     env: {
       ...import_node_process.default.env,
       PATH: buildAugmentedPath()
@@ -686,36 +688,33 @@ var DirectoryPickerModal = class extends import_obsidian2.FuzzySuggestModal {
     this.didChoose = false;
     this.options = [...options];
     this.defaultPath = defaultPath;
-    this.setPlaceholder("Select a directory to publish");
+    this.setPlaceholder("Select a file or folder to publish");
     this.setInstructions([
-      { command: "Type", purpose: "Search subdirectories" },
-      { command: "Enter", purpose: "Select directory" },
+      { command: "Type", purpose: "Search files and folders" },
+      { command: "Enter", purpose: "Select target" },
       { command: "Esc", purpose: "Cancel" }
     ]);
-  }
-  onOpen() {
-    super.onOpen();
-    if (this.defaultPath) {
-      this.inputEl.value = this.defaultPath;
-      this.inputEl.dispatchEvent(new Event("input"));
-    }
   }
   getItems() {
     if (!this.defaultPath) {
       return this.options;
     }
     return [...this.options].sort((left, right) => {
-      if (left === this.defaultPath) {
+      if (left.path === this.defaultPath) {
         return -1;
       }
-      if (right === this.defaultPath) {
+      if (right.path === this.defaultPath) {
         return 1;
       }
-      return left.localeCompare(right);
+      if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+      }
+      return left.path.localeCompare(right.path);
     });
   }
   getItemText(item) {
-    return item;
+    const prefix = item.kind === "directory" ? "DIR" : "FILE";
+    return `[${prefix}] ${item.path}`;
   }
   onChooseItem(item) {
     this.didChoose = true;
@@ -787,6 +786,8 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     this.isRunning = true;
     try {
       await action();
+    } catch (error) {
+      this.showCommandError(error);
     } finally {
       this.isRunning = false;
     }
@@ -806,8 +807,41 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     return parentPath;
   }
-  listSelectableDirectories() {
-    return this.app.vault.getAllLoadedFiles().filter((item) => item instanceof import_obsidian3.TFolder).map((folder) => normalizeVaultPath(folder.path)).filter((folderPath) => this.isSelectableDirectory(folderPath)).sort((left, right) => left.localeCompare(right));
+  listSelectableTargets() {
+    const allItems = this.app.vault.getAllLoadedFiles();
+    const targets = [];
+    for (const item of allItems) {
+      const normalizedPath = normalizeVaultPath(item.path);
+      if (!normalizedPath) {
+        continue;
+      }
+      if (item instanceof import_obsidian3.TFolder) {
+        if (!this.isSelectableDirectory(normalizedPath)) {
+          continue;
+        }
+        targets.push({ path: normalizedPath, kind: "directory" });
+        continue;
+      }
+      if (item instanceof import_obsidian3.TFile) {
+        if (!this.isSelectableFile(normalizedPath)) {
+          continue;
+        }
+        targets.push({ path: normalizedPath, kind: "file" });
+      }
+    }
+    targets.sort((left, right) => {
+      if (left.path === this.getActiveDefaultDirectory()) {
+        return -1;
+      }
+      if (right.path === this.getActiveDefaultDirectory()) {
+        return 1;
+      }
+      if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+      }
+      return left.path.localeCompare(right.path);
+    });
+    return targets;
   }
   isSelectableDirectory(vaultPath) {
     const normalized = normalizeVaultPath(vaultPath);
@@ -823,19 +857,33 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     return true;
   }
+  isSelectableFile(vaultPath) {
+    const normalized = normalizeVaultPath(vaultPath);
+    if (!normalized) {
+      return false;
+    }
+    const segments = normalized.split("/");
+    if (segments.some((segment) => segment.startsWith("."))) {
+      return false;
+    }
+    if (segments.includes("node_modules")) {
+      return false;
+    }
+    return true;
+  }
   async chooseDirectory() {
-    const selectableDirectories = this.listSelectableDirectories();
-    if (selectableDirectories.length === 0) {
-      new import_obsidian3.Notice("No publishable subdirectories were found in this vault.");
+    const selectableTargets = this.listSelectableTargets();
+    if (selectableTargets.length === 0) {
+      new import_obsidian3.Notice("No publishable files or subdirectories were found in this vault.");
       return null;
     }
     const defaultPath = this.getActiveDefaultDirectory();
-    const modal = new DirectoryPickerModal(this.app, selectableDirectories, defaultPath);
-    const selectedPath = await modal.openAndGetValue();
-    if (!selectedPath) {
+    const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultPath);
+    const selected = await modal.openAndGetValue();
+    if (!selected) {
       return null;
     }
-    return this.resolveDirectoryPath(selectedPath);
+    return this.resolveDirectoryPath(selected.path);
   }
   resolveDirectoryPath(selection) {
     const normalized = normalizeVaultPath(selection);
