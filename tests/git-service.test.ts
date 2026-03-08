@@ -54,6 +54,53 @@ describe("GitService", () => {
     expect(attempted).toEqual(["blog", "blog-2"]);
   });
 
+  it("recovers when gh creates repo but cannot attach origin", async () => {
+    const runner = vi.fn<ExecRunner>(async (command, args) => {
+      const key = commandKey(command, args);
+      if (key === "gh repo create blog --private --source=. --push") {
+        throw {
+          message: "remote attach failed",
+          stderr: "Unable to add remote \"origin\"",
+          stdout: "https://github.com/IslamTayeb/blog",
+          code: 1,
+        };
+      }
+      if (key === "gh api user --jq .login") {
+        return { stdout: "IslamTayeb\n", stderr: "" };
+      }
+      if (key === "gh repo view IslamTayeb/blog") {
+        return { stdout: "", stderr: "" };
+      }
+      if (key === "git remote get-url origin") {
+        throw {
+          message: "missing origin",
+          stderr: "No such remote",
+          stdout: "",
+          code: 2,
+        };
+      }
+      if (key === "git rev-parse --verify HEAD") {
+        return { stdout: "abc123\n", stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+
+    const service = new GitService(runner);
+    const name = await service.createRepoWithAutoName("/tmp/repo", "blog", "private", 1);
+
+    expect(name).toBe("blog");
+    expect(
+      runner.mock.calls.some(
+        ([command, args]) =>
+          command === "git" &&
+          args[0] === "remote" &&
+          args[1] === "add" &&
+          args[2] === "origin" &&
+          args[3] === "https://github.com/IslamTayeb/blog.git",
+      ),
+    ).toBe(true);
+  });
+
   it("returns up_to_date when there are no staged files", async () => {
     const runner: ExecRunner = async (command, args) => {
       if (commandKey(command, args) === "git diff --cached --name-only") {

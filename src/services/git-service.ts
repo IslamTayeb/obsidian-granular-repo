@@ -180,8 +180,15 @@ function isNoCommitsError(error: GitCommandError): boolean {
   );
 }
 
+function isRemoteAttachFailure(error: GitCommandError): boolean {
+  const output = `${error.stderr}\n${error.stdout}`.toLowerCase();
+  return output.includes("unable to add remote \"origin\"");
+}
+
 export class GitService {
   private readonly runner: ExecRunner;
+
+  private ghLogin?: string;
 
   constructor(runner: ExecRunner = defaultRunner) {
     this.runner = runner;
@@ -334,6 +341,12 @@ export class GitService {
         if (isRepoNameTakenError(commandError)) {
           continue;
         }
+        if (isRemoteAttachFailure(commandError)) {
+          const recovered = await this.recoverAfterRemoteAttachFailure(targetDir, candidate);
+          if (recovered) {
+            return candidate;
+          }
+        }
 
         throw commandError;
       }
@@ -391,6 +404,42 @@ export class GitService {
       }
 
       throw commandError;
+    }
+  }
+
+  private async getAuthenticatedUserLogin(): Promise<string> {
+    if (this.ghLogin) {
+      return this.ghLogin;
+    }
+
+    const result = await this.run("gh", ["api", "user", "--jq", ".login"]);
+    const login = result.stdout.trim();
+    if (!login) {
+      throw new Error("Could not resolve authenticated GitHub username.");
+    }
+
+    this.ghLogin = login;
+    return login;
+  }
+
+  private async recoverAfterRemoteAttachFailure(targetDir: string, repoName: string): Promise<boolean> {
+    try {
+      const owner = await this.getAuthenticatedUserLogin();
+      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+      await this.run("gh", ["repo", "view", `${owner}/${repoName}`]);
+
+      const existingOrigin = await this.getOriginUrl(targetDir);
+      if (!existingOrigin) {
+        await this.run("git", ["remote", "add", "origin", repoUrl], targetDir);
+      }
+
+      if (await this.hasAnyCommit(targetDir)) {
+        await this.push(targetDir);
+      }
+
+      return true;
+    } catch {
+      return false;
     }
   }
 

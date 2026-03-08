@@ -295,6 +295,11 @@ function isNoCommitsError(error) {
 ${error.stdout}`.toLowerCase();
   return output.includes("no commits yet") || output.includes("head does not match any") || output.includes("src refspec head does not match any") || output.includes("ambiguous argument 'head'") || output.includes("you need at least one commit");
 }
+function isRemoteAttachFailure(error) {
+  const output = `${error.stderr}
+${error.stdout}`.toLowerCase();
+  return output.includes('unable to add remote "origin"');
+}
 var GitService = class {
   constructor(runner = defaultRunner) {
     this.runner = runner;
@@ -414,6 +419,12 @@ var GitService = class {
         if (isRepoNameTakenError(commandError)) {
           continue;
         }
+        if (isRemoteAttachFailure(commandError)) {
+          const recovered = await this.recoverAfterRemoteAttachFailure(targetDir, candidate);
+          if (recovered) {
+            return candidate;
+          }
+        }
         throw commandError;
       }
     }
@@ -459,6 +470,35 @@ var GitService = class {
         return { usedUpstreamFallback: true };
       }
       throw commandError;
+    }
+  }
+  async getAuthenticatedUserLogin() {
+    if (this.ghLogin) {
+      return this.ghLogin;
+    }
+    const result = await this.run("gh", ["api", "user", "--jq", ".login"]);
+    const login = result.stdout.trim();
+    if (!login) {
+      throw new Error("Could not resolve authenticated GitHub username.");
+    }
+    this.ghLogin = login;
+    return login;
+  }
+  async recoverAfterRemoteAttachFailure(targetDir, repoName) {
+    try {
+      const owner = await this.getAuthenticatedUserLogin();
+      const repoUrl = `https://github.com/${owner}/${repoName}.git`;
+      await this.run("gh", ["repo", "view", `${owner}/${repoName}`]);
+      const existingOrigin = await this.getOriginUrl(targetDir);
+      if (!existingOrigin) {
+        await this.run("git", ["remote", "add", "origin", repoUrl], targetDir);
+      }
+      if (await this.hasAnyCommit(targetDir)) {
+        await this.push(targetDir);
+      }
+      return true;
+    } catch {
+      return false;
     }
   }
   async getOriginUrl(targetDir) {
@@ -755,6 +795,15 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       }
     });
     this.addCommand({
+      id: "publish-directory-select-target",
+      name: "Publish Directory to GitHub (Choose Target)",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handlePublishDirectory({ forcePicker: true });
+        });
+      }
+    });
+    this.addCommand({
       id: "push-all-repos",
       name: "Push All Repositories",
       callback: () => {
@@ -896,11 +945,18 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     return normalized;
   }
-  async handlePublishDirectory() {
+  async handlePublishDirectory(options) {
     if (!await this.ensurePrerequisites()) {
       return;
     }
-    const selectedVaultPath = await this.chooseDirectory();
+    const activeDefaultDirectory = this.getActiveDefaultDirectory();
+    let selectedVaultPath = null;
+    if (options?.forcePicker || !activeDefaultDirectory) {
+      selectedVaultPath = await this.chooseDirectory();
+    } else {
+      selectedVaultPath = activeDefaultDirectory;
+      new import_obsidian3.Notice(`Using active file directory: ${selectedVaultPath}`, 3500);
+    }
     if (!selectedVaultPath) {
       return;
     }
@@ -918,6 +974,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Selected path is outside the vault. Aborting.");
       return;
     }
+    new import_obsidian3.Notice(`Preparing publish for: ${selectedVaultPath}`, 3500);
     const repoState = await this.gitService.detectRepoState(targetPath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
       new import_obsidian3.Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 1e4);
@@ -937,10 +994,13 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     const folderName = folderNameFromVaultPath(vaultPath);
     const baseRepoName = sanitizeRepoName(folderName);
     try {
+      new import_obsidian3.Notice(`Configuring repo for ${vaultPath}...`, 5e3);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
+        new import_obsidian3.Notice(`Initializing git in ${vaultPath}...`, 5e3);
         await this.gitService.initRepo(targetPath);
       }
+      new import_obsidian3.Notice(`Creating or linking GitHub repo for ${vaultPath}...`, 6e3);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         targetPath,
         folderName,
@@ -966,6 +1026,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
   }
   async handleRepeatPublish(vaultPath, targetPath, originUrl) {
+    new import_obsidian3.Notice(`Pushing updates for ${vaultPath}...`, 5e3);
     const folderName = folderNameFromVaultPath(vaultPath);
     const result = await this.gitService.pushDirectory(targetPath, folderName);
     if (result.status === "failed") {
@@ -1000,6 +1061,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Could not resolve the vault base path.");
       return;
     }
+    new import_obsidian3.Notice("Scanning vault for standalone repositories...", 5e3);
     const summary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) => this.configStore.findByVaultPath(vaultPath)?.visibility ?? "private",
       resolveBaseRepoName: (vaultPath) => this.configStore.findByVaultPath(vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath)
@@ -1045,7 +1107,8 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
   }
   showCommandError(error) {
     if (error instanceof GitCommandError) {
-      new import_obsidian3.Notice(error.displayMessage(), 12e3);
+      const message = `${error.command} failed: ${error.displayMessage()}`;
+      new import_obsidian3.Notice(message, 15e3);
       return;
     }
     if (error instanceof Error) {
