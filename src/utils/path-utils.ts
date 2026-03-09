@@ -18,6 +18,16 @@ export function folderNameFromVaultPath(vaultPath: string): string {
   return path.posix.basename(normalized);
 }
 
+export function fileStemFromVaultPath(vaultPath: string): string {
+  const fileName = folderNameFromVaultPath(vaultPath);
+  const extension = path.posix.extname(fileName);
+  if (!extension) {
+    return fileName;
+  }
+
+  return fileName.slice(0, -extension.length);
+}
+
 export function ensureInsideVault(vaultBasePath: string, absoluteTargetPath: string): boolean {
   const relative = path.relative(vaultBasePath, absoluteTargetPath);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));

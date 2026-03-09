@@ -166,6 +166,30 @@ describe("GitService", () => {
     }
   });
 
+  it("syncs single file mirrors and removes stale files", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vault-publisher-sync-"));
+
+    try {
+      const sourceFile = path.join(tempRoot, "source.md");
+      const mirrorDir = path.join(tempRoot, "mirror");
+      await fs.mkdir(path.join(mirrorDir, ".git"), { recursive: true });
+      await fs.writeFile(path.join(mirrorDir, "old.md"), "old");
+      await fs.mkdir(path.join(mirrorDir, "stale"), { recursive: true });
+      await fs.writeFile(path.join(mirrorDir, "stale", "x.txt"), "x");
+      await fs.writeFile(sourceFile, "hello");
+
+      const service = new GitService(async () => ({ stdout: "", stderr: "" }));
+      await service.syncSingleFileToRepo(sourceFile, mirrorDir, "target.md");
+
+      await expect(fs.readFile(path.join(mirrorDir, "target.md"), "utf8")).resolves.toBe("hello");
+      await expect(fs.stat(path.join(mirrorDir, ".git"))).resolves.toBeTruthy();
+      await expect(fs.stat(path.join(mirrorDir, "old.md"))).rejects.toThrow();
+      await expect(fs.stat(path.join(mirrorDir, "stale"))).rejects.toThrow();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("push-all continues when one repo fails", async () => {
     const service = new GitService(async () => ({ stdout: "", stderr: "" }));
 

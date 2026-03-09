@@ -5,7 +5,13 @@ import path from "node:path";
 import process from "node:process";
 import { promisify } from "node:util";
 
-import { PrerequisiteStatus, PushAllSummary, PushRepoResult, RepoState, RepoVisibility } from "../types";
+import {
+  PrerequisiteStatus,
+  PushAllSummary,
+  PushRepoResult,
+  RepoState,
+  RepoVisibility,
+} from "../types";
 import { buildCommitMessage } from "../utils/commit-message";
 import { isGitHubOrigin } from "../utils/github-url";
 import { repoNameCandidates, sanitizeRepoName } from "../utils/repo-name-utils";
@@ -305,6 +311,26 @@ export class GitService {
     await this.run("git", ["init"], targetDir);
   }
 
+  async ensureDirectory(targetDir: string): Promise<void> {
+    await fsp.mkdir(targetDir, { recursive: true });
+  }
+
+  async syncSingleFileToRepo(sourceFilePath: string, targetDir: string, repoFileName: string): Promise<void> {
+    await this.ensureDirectory(targetDir);
+
+    const entries = await fsp.readdir(targetDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === repoFileName) {
+        continue;
+      }
+
+      await fsp.rm(path.join(targetDir, entry.name), { recursive: true, force: true });
+    }
+
+    const destinationPath = path.join(targetDir, repoFileName);
+    await fsp.copyFile(sourceFilePath, destinationPath);
+  }
+
   async createGitHubRepo(
     targetDir: string,
     repoName: string,
@@ -492,7 +518,10 @@ export class GitService {
     return { repoName, originUrl, pushed: false };
   }
 
-  async pushDirectory(targetDir: string, folderName: string): Promise<Omit<PushRepoResult, "vaultPath">> {
+  async pushDirectory(
+    targetDir: string,
+    folderName: string,
+  ): Promise<Omit<PushRepoResult, "targetType" | "vaultPath">> {
     try {
       await this.stageAll(targetDir);
       const stagedFiles = await this.getStagedFiles(targetDir);
@@ -596,6 +625,7 @@ export class GitService {
           );
 
           results.push({
+            targetType: "directory",
             vaultPath,
             status: linked.pushed ? "pushed" : "up_to_date",
             originUrl: linked.originUrl ?? undefined,
@@ -603,6 +633,7 @@ export class GitService {
         } catch (error: unknown) {
           const commandError = errorFromUnknown(error, "gh", ["repo", "create"], absolutePath);
           results.push({
+            targetType: "directory",
             vaultPath,
             status: "failed",
             error: commandError.displayMessage(),
@@ -612,7 +643,7 @@ export class GitService {
       }
 
       const result = await this.pushDirectory(absolutePath, folderName);
-      results.push({ ...result, vaultPath, originUrl: repoState.originUrl });
+      results.push({ ...result, targetType: "directory", vaultPath, originUrl: repoState.originUrl });
     }
 
     const summary: PushAllSummary = {

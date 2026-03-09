@@ -1,16 +1,24 @@
+import crypto from "node:crypto";
 import path from "node:path";
 
 import { App, Notice, Plugin, TFile, TFolder } from "obsidian";
 
+import { DirectoryPickerModal, PublishTargetItem } from "./modals/directory-picker-modal";
+import { VisibilityModal } from "./modals/visibility-modal";
 import { ConfigStore } from "./services/config-store";
 import { GitCommandError, GitService } from "./services/git-service";
-import { VisibilityModal } from "./modals/visibility-modal";
-import { DirectoryPickerModal, PublishTargetItem } from "./modals/directory-picker-modal";
-import { PublishedDirRecord } from "./types";
+import {
+  PublishedTargetRecord,
+  PublishTargetType,
+  PushAllSummary,
+  PushRepoResult,
+  RepoVisibility,
+} from "./types";
 import { isGitHubOrigin, originToWebUrl } from "./utils/github-url";
 import {
   absolutePathForVaultPath,
   ensureInsideVault,
+  fileStemFromVaultPath,
   folderNameFromVaultPath,
   isVaultRoot,
   normalizeVaultPath,
@@ -20,6 +28,13 @@ import { parseRepoNameFromOrigin, sanitizeRepoName } from "./utils/repo-name-uti
 type FileSystemAdapterLike = {
   basePath?: string;
 };
+
+type ResolvedPublishTarget = {
+  targetType: PublishTargetType;
+  vaultPath: string;
+};
+
+const MIRROR_ROOT = ".obsidian/plugins/vault-publisher/mirrors";
 
 export default class VaultPublisherPlugin extends Plugin {
   private configStore!: ConfigStore;
@@ -41,7 +56,7 @@ export default class VaultPublisherPlugin extends Plugin {
       name: "Publish Directory to GitHub",
       callback: () => {
         void this.executeExclusive(async () => {
-          await this.handlePublishDirectory();
+          await this.handlePublishCommand();
         });
       },
     });
@@ -51,7 +66,7 @@ export default class VaultPublisherPlugin extends Plugin {
       name: "Publish Directory to GitHub (Choose Target)",
       callback: () => {
         void this.executeExclusive(async () => {
-          await this.handlePublishDirectory({ forcePicker: true });
+          await this.handlePublishCommand({ forcePicker: true });
         });
       },
     });
@@ -109,59 +124,6 @@ export default class VaultPublisherPlugin extends Plugin {
     return null;
   }
 
-  private getActiveDefaultDirectory(): string | undefined {
-    const activeFile = this.app.workspace.getActiveFile();
-    const parentPath = normalizeVaultPath(activeFile?.parent?.path ?? "");
-
-    if (!parentPath || !this.isSelectableDirectory(parentPath)) {
-      return undefined;
-    }
-
-    return parentPath;
-  }
-
-  private listSelectableTargets(): PublishTargetItem[] {
-    const allItems = this.app.vault.getAllLoadedFiles();
-    const targets: PublishTargetItem[] = [];
-
-    for (const item of allItems) {
-      const normalizedPath = normalizeVaultPath(item.path);
-      if (!normalizedPath) {
-        continue;
-      }
-
-      if (item instanceof TFolder) {
-        if (!this.isSelectableDirectory(normalizedPath)) {
-          continue;
-        }
-        targets.push({ path: normalizedPath, kind: "directory" });
-        continue;
-      }
-
-      if (item instanceof TFile) {
-        if (!this.isSelectableFile(normalizedPath)) {
-          continue;
-        }
-        targets.push({ path: normalizedPath, kind: "file" });
-      }
-    }
-
-    targets.sort((left, right) => {
-      if (left.path === this.getActiveDefaultDirectory()) {
-        return -1;
-      }
-      if (right.path === this.getActiveDefaultDirectory()) {
-        return 1;
-      }
-      if (left.kind !== right.kind) {
-        return left.kind === "directory" ? -1 : 1;
-      }
-      return left.path.localeCompare(right.path);
-    });
-
-    return targets;
-  }
-
   private isSelectableDirectory(vaultPath: string): boolean {
     const normalized = normalizeVaultPath(vaultPath);
     if (!normalized) {
@@ -198,59 +160,153 @@ export default class VaultPublisherPlugin extends Plugin {
     return true;
   }
 
-  private async chooseDirectory(): Promise<string | null> {
+  private getActiveDefaultTarget(): ResolvedPublishTarget | undefined {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile) {
+      const activeFilePath = normalizeVaultPath(activeFile.path);
+      if (this.isSelectableFile(activeFilePath)) {
+        return {
+          targetType: "file",
+          vaultPath: activeFilePath,
+        };
+      }
+    }
+
+    const activeParent = normalizeVaultPath(activeFile?.parent?.path ?? "");
+    if (activeParent && this.isSelectableDirectory(activeParent)) {
+      return {
+        targetType: "directory",
+        vaultPath: activeParent,
+      };
+    }
+
+    return undefined;
+  }
+
+  private listSelectableTargets(): PublishTargetItem[] {
+    const allItems = this.app.vault.getAllLoadedFiles();
+    const targets: PublishTargetItem[] = [];
+
+    for (const item of allItems) {
+      const normalizedPath = normalizeVaultPath(item.path);
+      if (!normalizedPath) {
+        continue;
+      }
+
+      if (item instanceof TFolder) {
+        if (!this.isSelectableDirectory(normalizedPath)) {
+          continue;
+        }
+        targets.push({ path: normalizedPath, kind: "directory" });
+        continue;
+      }
+
+      if (item instanceof TFile) {
+        if (!this.isSelectableFile(normalizedPath)) {
+          continue;
+        }
+        targets.push({ path: normalizedPath, kind: "file" });
+      }
+    }
+
+    const defaultTarget = this.getActiveDefaultTarget();
+    targets.sort((left, right) => {
+      if (defaultTarget && left.path === defaultTarget.vaultPath) {
+        return -1;
+      }
+      if (defaultTarget && right.path === defaultTarget.vaultPath) {
+        return 1;
+      }
+      if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+      }
+      return left.path.localeCompare(right.path);
+    });
+
+    return targets;
+  }
+
+  private resolveTargetSelection(item: PublishTargetItem): ResolvedPublishTarget {
+    const normalizedPath = normalizeVaultPath(item.path);
+    const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
+
+    if (item.kind === "file" || abstractItem instanceof TFile) {
+      return {
+        targetType: "file",
+        vaultPath: normalizedPath,
+      };
+    }
+
+    return {
+      targetType: "directory",
+      vaultPath: normalizedPath,
+    };
+  }
+
+  private async chooseTarget(): Promise<ResolvedPublishTarget | null> {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
       new Notice("No publishable files or subdirectories were found in this vault.");
       return null;
     }
 
-    const defaultPath = this.getActiveDefaultDirectory();
-    const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultPath);
+    const defaultTarget = this.getActiveDefaultTarget();
+    const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultTarget?.vaultPath);
     const selected = await modal.openAndGetValue();
 
     if (!selected) {
       return null;
     }
 
-    return this.resolveDirectoryPath(selected.path);
+    return this.resolveTargetSelection(selected);
   }
 
-  private resolveDirectoryPath(selection: string): string {
-    const normalized = normalizeVaultPath(selection);
-    const file = this.app.vault.getAbstractFileByPath(normalized);
-
-    if (file instanceof TFile) {
-      return normalizeVaultPath(file.parent?.path ?? "");
-    }
-
-    if (file instanceof TFolder) {
-      return normalizeVaultPath(file.path);
-    }
-
-    return normalized;
+  private formatTargetLabel(target: ResolvedPublishTarget): string {
+    const prefix = target.targetType === "file" ? "file" : "directory";
+    return `${prefix}: ${target.vaultPath}`;
   }
 
-  private async handlePublishDirectory(options?: { forcePicker?: boolean }): Promise<void> {
+  private buildMirrorRelativePath(fileVaultPath: string): string {
+    const stemSlug = sanitizeRepoName(fileStemFromVaultPath(fileVaultPath));
+    const hash = crypto.createHash("sha1").update(fileVaultPath).digest("hex").slice(0, 8);
+    return `${MIRROR_ROOT}/${stemSlug}-${hash}`;
+  }
+
+  private async resolveVisibility(existing: PublishedTargetRecord | undefined): Promise<RepoVisibility | null> {
+    if (existing) {
+      return existing.visibility;
+    }
+
+    return new VisibilityModal(this.app).openAndGetValue();
+  }
+
+  private getRepoWebUrl(repoName: string, originUrl: string | null): string {
+    if (originUrl) {
+      return originToWebUrl(originUrl) ?? originUrl;
+    }
+
+    return `https://github.com/${repoName}`;
+  }
+
+  private async handlePublishCommand(options?: { forcePicker?: boolean }): Promise<void> {
     if (!(await this.ensurePrerequisites())) {
       return;
     }
 
-    const activeDefaultDirectory = this.getActiveDefaultDirectory();
-    let selectedVaultPath: string | null = null;
-
-    if (options?.forcePicker || !activeDefaultDirectory) {
-      selectedVaultPath = await this.chooseDirectory();
+    let target: ResolvedPublishTarget | null = null;
+    const defaultTarget = this.getActiveDefaultTarget();
+    if (options?.forcePicker || !defaultTarget) {
+      target = await this.chooseTarget();
     } else {
-      selectedVaultPath = activeDefaultDirectory;
-      new Notice(`Using active file directory: ${selectedVaultPath}`, 3500);
+      target = defaultTarget;
+      new Notice(`Using active target ${this.formatTargetLabel(target)}`, 3500);
     }
 
-    if (!selectedVaultPath) {
+    if (!target) {
       return;
     }
 
-    if (isVaultRoot(selectedVaultPath)) {
+    if (target.targetType === "directory" && isVaultRoot(target.vaultPath)) {
       new Notice("Vault root cannot be published. Select a subdirectory.");
       return;
     }
@@ -261,117 +317,338 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
-    const targetPath = absolutePathForVaultPath(vaultBasePath, selectedVaultPath);
+    new Notice(`Preparing publish for ${this.formatTargetLabel(target)}`, 3500);
+
+    if (target.targetType === "directory") {
+      await this.publishDirectoryTarget(target.vaultPath, vaultBasePath);
+      return;
+    }
+
+    await this.publishFileTarget(target.vaultPath, vaultBasePath);
+  }
+
+  private async publishDirectoryTarget(vaultPath: string, vaultBasePath: string): Promise<void> {
+    const targetPath = absolutePathForVaultPath(vaultBasePath, vaultPath);
     if (!ensureInsideVault(vaultBasePath, targetPath)) {
       new Notice("Selected path is outside the vault. Aborting.");
       return;
     }
 
-    new Notice(`Preparing publish for: ${selectedVaultPath}`, 3500);
-
-    const repoState = await this.gitService.detectRepoState(targetPath);
-
-    if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 10000);
-      return;
-    }
-
-    if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      await this.handleFirstPublish(selectedVaultPath, targetPath, repoState);
-      return;
-    }
-
-    await this.handleRepeatPublish(selectedVaultPath, targetPath, repoState.originUrl ?? null);
-  }
-
-  private async handleFirstPublish(
-    vaultPath: string,
-    targetPath: string,
-    repoState: { hasLocalGit: boolean; hasOrigin: boolean },
-  ): Promise<void> {
-    const visibility = await new VisibilityModal(this.app).openAndGetValue();
+    const existingRecord = this.configStore.findTarget("directory", vaultPath);
+    const visibility = await this.resolveVisibility(existingRecord);
     if (!visibility) {
       return;
     }
 
     const folderName = folderNameFromVaultPath(vaultPath);
-    const baseRepoName = sanitizeRepoName(folderName);
+    const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? folderName);
 
-    try {
-      new Notice(`Configuring repo for ${vaultPath}...`, 5000);
+    const repoState = await this.gitService.detectRepoState(targetPath);
+    if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
+      new Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 10000);
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+
+    if (!repoState.hasLocalGit || !repoState.hasOrigin) {
+      new Notice(`Configuring repo for directory ${vaultPath}...`, 6000);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
-        new Notice(`Initializing git in ${vaultPath}...`, 5000);
         await this.gitService.initRepo(targetPath);
       }
 
-      new Notice(`Creating or linking GitHub repo for ${vaultPath}...`, 6000);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         targetPath,
         folderName,
         baseRepoName,
         visibility,
       );
-      const repoName = linked.repoName;
-      const originUrl = linked.originUrl;
 
-      const record: PublishedDirRecord = {
+      this.configStore.upsertTarget({
+        targetType: "directory",
         vaultPath,
-        repoName,
+        repoName: linked.repoName,
         remote: "origin",
         visibility,
-        lastPushed: new Date().toISOString(),
-      };
-
-      this.configStore.upsert(record);
+        lastPushed: nowIso,
+      });
       await this.configStore.save();
 
-      const repoUrl = originUrl ? originToWebUrl(originUrl) ?? originUrl : `https://github.com/${repoName}`;
+      const repoUrl = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
       new Notice(`Published ${vaultPath} -> ${repoUrl}${suffix}`, 8000);
-    } catch (error: unknown) {
-      this.showCommandError(error);
+      return;
     }
-  }
 
-  private async handleRepeatPublish(
-    vaultPath: string,
-    targetPath: string,
-    originUrl: string | null,
-  ): Promise<void> {
     new Notice(`Pushing updates for ${vaultPath}...`, 5000);
-    const folderName = folderNameFromVaultPath(vaultPath);
-    const result = await this.gitService.pushDirectory(targetPath, folderName);
-
-    if (result.status === "failed") {
-      new Notice(result.error ?? "Push failed.", 12000);
+    const pushResult = await this.gitService.pushDirectory(targetPath, folderName);
+    if (pushResult.status === "failed") {
+      new Notice(pushResult.error ?? "Push failed.", 12000);
       return;
     }
 
-    if (result.status === "up_to_date") {
-      new Notice("Already up to date.");
-      return;
-    }
-
-    const existing = this.configStore.findByVaultPath(vaultPath);
     const repoName =
-      existing?.repoName ||
-      (originUrl ? parseRepoNameFromOrigin(originUrl) : null) ||
-      sanitizeRepoName(folderName);
-    const visibility = existing?.visibility ?? "private";
+      existingRecord?.repoName ||
+      (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) ||
+      baseRepoName;
+    const nextLastPushed = pushResult.status === "pushed" ? nowIso : existingRecord?.lastPushed ?? nowIso;
 
-    this.configStore.upsert({
+    this.configStore.upsertTarget({
+      targetType: "directory",
       vaultPath,
       repoName,
       remote: "origin",
       visibility,
-      lastPushed: new Date().toISOString(),
+      lastPushed: nextLastPushed,
     });
     await this.configStore.save();
 
-    const pushedUrl = originUrl ? originToWebUrl(originUrl) ?? originUrl : repoName;
-    const changedCount = result.changedCount ?? 0;
-    new Notice(`Pushed ${changedCount} changes to ${pushedUrl}`, 8000);
+    if (pushResult.status === "up_to_date") {
+      new Notice("Already up to date.");
+      return;
+    }
+
+    const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
+    new Notice(`Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`, 8000);
+  }
+
+  private async publishFileTarget(vaultPath: string, vaultBasePath: string): Promise<void> {
+    const sourceFile = this.app.vault.getAbstractFileByPath(vaultPath);
+    if (!(sourceFile instanceof TFile)) {
+      new Notice(`File not found: ${vaultPath}`);
+      return;
+    }
+
+    const existingRecord = this.configStore.findTarget("file", vaultPath);
+    const visibility = await this.resolveVisibility(existingRecord);
+    if (!visibility) {
+      return;
+    }
+
+    const sourceAbsolutePath = absolutePathForVaultPath(vaultBasePath, vaultPath);
+    const mirrorPath = existingRecord?.mirrorPath ?? this.buildMirrorRelativePath(vaultPath);
+    const mirrorFileName = existingRecord?.mirrorFileName ?? path.posix.basename(vaultPath);
+    const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, mirrorPath);
+
+    if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
+      new Notice("File publish path resolved outside vault. Aborting.");
+      return;
+    }
+
+    const fileStem = fileStemFromVaultPath(vaultPath);
+    const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? fileStem);
+
+    new Notice(`Syncing file mirror for ${vaultPath}...`, 5000);
+    await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, mirrorFileName);
+
+    let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
+    if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
+      new Notice("This file target uses a non-GitHub origin. v1 supports GitHub remotes only.", 12000);
+      return;
+    }
+
+    if (!repoState.hasLocalGit) {
+      await this.gitService.initRepo(mirrorAbsolutePath);
+      repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
+    }
+
+    const nowIso = new Date().toISOString();
+
+    if (!repoState.hasOrigin) {
+      new Notice(`Creating or linking GitHub repo for file ${vaultPath}...`, 6000);
+      const linked = await this.gitService.linkLocalRepoWithoutOrigin(
+        mirrorAbsolutePath,
+        fileStem,
+        baseRepoName,
+        visibility,
+      );
+
+      this.configStore.upsertTarget({
+        targetType: "file",
+        vaultPath,
+        repoName: linked.repoName,
+        remote: "origin",
+        visibility,
+        lastPushed: nowIso,
+        mirrorPath,
+        mirrorFileName,
+      });
+      await this.configStore.save();
+
+      const repoUrl = this.getRepoWebUrl(linked.repoName, linked.originUrl);
+      const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
+      new Notice(`Published file ${vaultPath} -> ${repoUrl}${suffix}`, 9000);
+      return;
+    }
+
+    const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
+    if (pushResult.status === "failed") {
+      new Notice(pushResult.error ?? "File push failed.", 12000);
+      return;
+    }
+
+    const repoName =
+      existingRecord?.repoName ||
+      (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) ||
+      baseRepoName;
+    const nextLastPushed = pushResult.status === "pushed" ? nowIso : existingRecord?.lastPushed ?? nowIso;
+
+    this.configStore.upsertTarget({
+      targetType: "file",
+      vaultPath,
+      repoName,
+      remote: "origin",
+      visibility,
+      lastPushed: nextLastPushed,
+      mirrorPath,
+      mirrorFileName,
+    });
+    await this.configStore.save();
+
+    if (pushResult.status === "up_to_date") {
+      new Notice(`File repo already up to date: ${vaultPath}`, 6000);
+      return;
+    }
+
+    const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
+    new Notice(`Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`, 9000);
+  }
+
+  private summarizeResults(results: PushRepoResult[]): PushAllSummary {
+    return {
+      total: results.length,
+      pushed: results.filter((result) => result.status === "pushed").length,
+      upToDate: results.filter((result) => result.status === "up_to_date").length,
+      skipped: results.filter((result) => result.status === "skipped").length,
+      failed: results.filter((result) => result.status === "failed").length,
+      results,
+    };
+  }
+
+  private async pushManagedFileTargets(vaultBasePath: string): Promise<{ results: PushRepoResult[]; changed: boolean }> {
+    const records = this.configStore.getTargetsByType("file");
+    const results: PushRepoResult[] = [];
+    let changed = false;
+
+    for (const record of records) {
+      const sourceItem = this.app.vault.getAbstractFileByPath(record.vaultPath);
+      if (!(sourceItem instanceof TFile)) {
+        results.push({
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          status: "failed",
+          error: "Source file no longer exists.",
+        });
+        continue;
+      }
+
+      if (!record.mirrorPath || !record.mirrorFileName) {
+        results.push({
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          status: "failed",
+          error: "Missing mirror metadata for file target.",
+        });
+        continue;
+      }
+
+      const sourceAbsolutePath = absolutePathForVaultPath(vaultBasePath, record.vaultPath);
+      const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, record.mirrorPath);
+      if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
+        results.push({
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          status: "failed",
+          error: "Resolved file or mirror path outside vault.",
+        });
+        continue;
+      }
+
+      try {
+        await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, record.mirrorFileName);
+
+        let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
+        if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
+          results.push({
+            targetType: "file",
+            vaultPath: record.vaultPath,
+            status: "failed",
+            error: "Non-GitHub origin is configured for this file mirror.",
+          });
+          continue;
+        }
+
+        if (!repoState.hasLocalGit) {
+          await this.gitService.initRepo(mirrorAbsolutePath);
+          repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
+        }
+
+        const nowIso = new Date().toISOString();
+        const fileStem = fileStemFromVaultPath(record.vaultPath);
+        const baseRepoName = sanitizeRepoName(record.repoName || fileStem);
+
+        if (!repoState.hasOrigin) {
+          const linked = await this.gitService.linkLocalRepoWithoutOrigin(
+            mirrorAbsolutePath,
+            fileStem,
+            baseRepoName,
+            record.visibility,
+          );
+
+          const status = linked.pushed ? "pushed" : "up_to_date";
+          results.push({
+            targetType: "file",
+            vaultPath: record.vaultPath,
+            status,
+            originUrl: linked.originUrl ?? undefined,
+          });
+
+          this.configStore.upsertTarget({
+            ...record,
+            repoName: linked.repoName,
+            lastPushed: status === "pushed" ? nowIso : record.lastPushed,
+          });
+          changed = true;
+          continue;
+        }
+
+        const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
+        results.push({
+          ...pushResult,
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          originUrl: repoState.originUrl,
+        });
+
+        const repoName =
+          record.repoName ||
+          (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) ||
+          baseRepoName;
+        this.configStore.upsertTarget({
+          ...record,
+          repoName,
+          lastPushed: pushResult.status === "pushed" ? nowIso : record.lastPushed,
+        });
+        changed = true;
+      } catch (error: unknown) {
+        const message =
+          error instanceof GitCommandError
+            ? error.displayMessage()
+            : error instanceof Error
+              ? error.message
+              : "Unknown file push failure.";
+
+        results.push({
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          status: "failed",
+          error: message,
+        });
+      }
+    }
+
+    return { results, changed };
   }
 
   private async handlePushAllRepositories(): Promise<void> {
@@ -386,21 +663,17 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     new Notice("Scanning vault for standalone repositories...", 5000);
-    const summary = await this.gitService.pushAllRepos(vaultBasePath, {
-      resolveVisibility: (vaultPath) => this.configStore.findByVaultPath(vaultPath)?.visibility ?? "private",
+    const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
+      resolveVisibility: (vaultPath) =>
+        this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",
       resolveBaseRepoName: (vaultPath) =>
-        this.configStore.findByVaultPath(vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath),
+        this.configStore.findTarget("directory", vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath),
     });
 
-    if (summary.total === 0) {
-      new Notice("No standalone git repositories found in vault subdirectories.");
-      return;
-    }
-
-    let shouldSaveConfig = false;
     const nowIso = new Date().toISOString();
+    let shouldSave = false;
 
-    for (const result of summary.results) {
+    for (const result of directorySummary.results) {
       if (!result.originUrl || !isGitHubOrigin(result.originUrl)) {
         continue;
       }
@@ -410,22 +683,34 @@ export default class VaultPublisherPlugin extends Plugin {
         continue;
       }
 
-      const existing = this.configStore.findByVaultPath(result.vaultPath);
+      const existing = this.configStore.findTarget("directory", result.vaultPath);
       const visibility = existing?.visibility ?? "private";
       const lastPushed = result.status === "pushed" ? nowIso : existing?.lastPushed ?? nowIso;
 
-      this.configStore.upsert({
+      this.configStore.upsertTarget({
+        targetType: "directory",
         vaultPath: result.vaultPath,
         repoName,
         remote: "origin",
         visibility,
         lastPushed,
       });
-      shouldSaveConfig = true;
+      shouldSave = true;
     }
 
-    if (shouldSaveConfig) {
+    const filePush = await this.pushManagedFileTargets(vaultBasePath);
+    if (filePush.changed) {
+      shouldSave = true;
+    }
+
+    if (shouldSave) {
       await this.configStore.save();
+    }
+
+    const summary = this.summarizeResults([...directorySummary.results, ...filePush.results]);
+    if (summary.total === 0) {
+      new Notice("No standalone or managed file repositories found to push.");
+      return;
     }
 
     new Notice(
@@ -437,7 +722,7 @@ export default class VaultPublisherPlugin extends Plugin {
     if (failures.length > 0) {
       const details = failures
         .slice(0, 3)
-        .map((failure) => `${failure.vaultPath}: ${failure.error ?? "Unknown error"}`)
+        .map((failure) => `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`)
         .join(" | ");
       new Notice(`Push failures: ${details}`, 12000);
     }
@@ -445,8 +730,7 @@ export default class VaultPublisherPlugin extends Plugin {
 
   private showCommandError(error: unknown): void {
     if (error instanceof GitCommandError) {
-      const message = `${error.command} failed: ${error.displayMessage()}`;
-      new Notice(message, 15000);
+      new Notice(`${error.command} failed: ${error.displayMessage()}`, 15000);
       return;
     }
 

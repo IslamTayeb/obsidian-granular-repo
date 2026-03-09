@@ -1,15 +1,19 @@
 export type RepoVisibility = "public" | "private";
+export type PublishTargetType = "directory" | "file";
 
-export interface PublishedDirRecord {
+export interface PublishedTargetRecord {
+  targetType: PublishTargetType;
   vaultPath: string;
   repoName: string;
   remote: "origin";
   visibility: RepoVisibility;
   lastPushed: string;
+  mirrorPath?: string;
+  mirrorFileName?: string;
 }
 
 export interface VaultPublisherData {
-  publishedDirs: PublishedDirRecord[];
+  publishedTargets: PublishedTargetRecord[];
 }
 
 export interface RepoState {
@@ -22,6 +26,7 @@ export interface RepoState {
 export type PushRepoStatus = "pushed" | "up_to_date" | "skipped" | "failed";
 
 export interface PushRepoResult {
+  targetType: PublishTargetType;
   vaultPath: string;
   status: PushRepoStatus;
   changedCount?: number;
@@ -41,4 +46,12 @@ export interface PushAllSummary {
 export interface PrerequisiteStatus {
   ok: boolean;
   message?: string;
+}
+
+export interface LegacyPublishedDirRecord {
+  vaultPath: string;
+  repoName: string;
+  remote: "origin";
+  visibility: RepoVisibility;
+  lastPushed: string;
 }

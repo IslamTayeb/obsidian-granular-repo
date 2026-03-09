@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   absolutePathForVaultPath,
   ensureInsideVault,
+  fileStemFromVaultPath,
   folderNameFromVaultPath,
   isVaultRoot,
   normalizeVaultPath,
@@ -33,5 +34,9 @@ describe("path-utils", () => {
 
   it("extracts folder name", () => {
     expect(folderNameFromVaultPath("notes/blog")).toBe("blog");
+  });
+
+  it("extracts file stem from file path", () => {
+    expect(fileStemFromVaultPath("notes/My Note.md")).toBe("My Note");
   });
 });
