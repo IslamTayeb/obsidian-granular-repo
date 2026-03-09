@@ -95,6 +95,30 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
       this.inputEl.removeEventListener("keydown", this.keydownHandler);
       this.keydownHandler = void 0;
     }
+    if (!this.didChoose) {
+      const normalizedQuery = this.normalizeQuery(this.inputEl.value);
+      if (normalizedQuery) {
+        const exactMatch = this.options.find(
+          (option) => this.normalizeQuery(option.path) === normalizedQuery
+        );
+        if (exactMatch) {
+          this.didChoose = true;
+          this.resolveSelection?.(exactMatch);
+          super.onClose();
+          return;
+        }
+        const prefixMatches = this.options.filter(
+          (option) => this.normalizeQuery(option.path).startsWith(normalizedQuery)
+        );
+        if (prefixMatches.length === 1) {
+          this.didChoose = true;
+          this.resolveSelection?.(prefixMatches[0]);
+          super.onClose();
+          return;
+        }
+        this.unmatchedQuery = normalizedQuery;
+      }
+    }
     super.onClose();
     if (!this.didChoose) {
       this.resolveSelection?.(null);
@@ -105,6 +129,12 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
       this.resolveSelection = resolve;
       this.open();
     });
+  }
+  getUnmatchedQuery() {
+    return this.unmatchedQuery;
+  }
+  normalizeQuery(value) {
+    return value.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "").trim();
   }
 };
 
@@ -1037,6 +1067,10 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultTarget?.vaultPath);
     const selected = await modal.openAndGetValue();
     if (!selected) {
+      const unmatchedQuery = modal.getUnmatchedQuery();
+      if (unmatchedQuery) {
+        new import_obsidian3.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
+      }
       return null;
     }
     return this.resolveTargetSelection(selected);
@@ -1074,9 +1108,6 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       target = defaultTarget;
     }
     if (!target) {
-      if (options?.forcePicker) {
-        new import_obsidian3.Notice("Publish cancelled.");
-      }
       return;
     }
     if (target.targetType === "directory" && isVaultRoot(target.vaultPath)) {

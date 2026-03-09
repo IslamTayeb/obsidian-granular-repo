@@ -16,6 +16,8 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
 
   private keydownHandler?: (event: KeyboardEvent) => void;
 
+  private unmatchedQuery?: string;
+
   constructor(app: App, options: PublishTargetItem[], defaultPath?: string) {
     super(app);
     this.options = [...options];
@@ -78,6 +80,33 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
       this.keydownHandler = undefined;
     }
 
+    if (!this.didChoose) {
+      const normalizedQuery = this.normalizeQuery(this.inputEl.value);
+      if (normalizedQuery) {
+        const exactMatch = this.options.find(
+          (option) => this.normalizeQuery(option.path) === normalizedQuery,
+        );
+        if (exactMatch) {
+          this.didChoose = true;
+          this.resolveSelection?.(exactMatch);
+          super.onClose();
+          return;
+        }
+
+        const prefixMatches = this.options.filter((option) =>
+          this.normalizeQuery(option.path).startsWith(normalizedQuery),
+        );
+        if (prefixMatches.length === 1) {
+          this.didChoose = true;
+          this.resolveSelection?.(prefixMatches[0]);
+          super.onClose();
+          return;
+        }
+
+        this.unmatchedQuery = normalizedQuery;
+      }
+    }
+
     super.onClose();
 
     if (!this.didChoose) {
@@ -90,5 +119,13 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
       this.resolveSelection = resolve;
       this.open();
     });
+  }
+
+  getUnmatchedQuery(): string | undefined {
+    return this.unmatchedQuery;
+  }
+
+  private normalizeQuery(value: string): string {
+    return value.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "").trim();
   }
 }

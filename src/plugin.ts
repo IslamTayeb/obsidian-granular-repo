@@ -246,6 +246,10 @@ export default class VaultPublisherPlugin extends Plugin {
     const selected = await modal.openAndGetValue();
 
     if (!selected) {
+      const unmatchedQuery = modal.getUnmatchedQuery();
+      if (unmatchedQuery) {
+        new Notice(`No matching target found for: ${unmatchedQuery}`, 6000);
+      }
       return null;
     }
 
@@ -293,9 +297,6 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     if (!target) {
-      if (options?.forcePicker) {
-        new Notice("Publish cancelled.");
-      }
       return;
     }
 
