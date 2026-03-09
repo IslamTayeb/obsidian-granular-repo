@@ -49,8 +49,6 @@ export default class VaultPublisherPlugin extends Plugin {
 
     this.gitService = new GitService();
 
-    void this.noticePrerequisiteIssues();
-
     this.addCommand({
       id: "publish-directory",
       name: "Publish Directory to GitHub",
@@ -80,13 +78,6 @@ export default class VaultPublisherPlugin extends Plugin {
         });
       },
     });
-  }
-
-  private async noticePrerequisiteIssues(): Promise<void> {
-    const status = await this.gitService.checkPrerequisites();
-    if (!status.ok && status.message) {
-      new Notice(status.message, 12000);
-    }
   }
 
   private async ensurePrerequisites(): Promise<boolean> {
@@ -299,7 +290,6 @@ export default class VaultPublisherPlugin extends Plugin {
       target = await this.chooseTarget();
     } else {
       target = defaultTarget;
-      new Notice(`Using active target ${this.formatTargetLabel(target)}`, 3500);
     }
 
     if (!target) {
@@ -316,8 +306,6 @@ export default class VaultPublisherPlugin extends Plugin {
       new Notice("Could not resolve the vault base path.");
       return;
     }
-
-    new Notice(`Preparing publish for ${this.formatTargetLabel(target)}`, 3500);
 
     if (target.targetType === "directory") {
       await this.publishDirectoryTarget(target.vaultPath, vaultBasePath);
@@ -352,7 +340,7 @@ export default class VaultPublisherPlugin extends Plugin {
     const nowIso = new Date().toISOString();
 
     if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      new Notice(`Configuring repo for directory ${vaultPath}...`, 6000);
+      new Notice(`Connecting directory ${vaultPath} to GitHub...`, 5000);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
         await this.gitService.initRepo(targetPath);
@@ -381,7 +369,7 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
-    new Notice(`Pushing updates for ${vaultPath}...`, 5000);
+    new Notice(`Pushing directory repo ${vaultPath}...`, 5000);
     const pushResult = await this.gitService.pushDirectory(targetPath, folderName);
     if (pushResult.status === "failed") {
       new Notice(pushResult.error ?? "Push failed.", 12000);
@@ -438,8 +426,6 @@ export default class VaultPublisherPlugin extends Plugin {
 
     const fileStem = fileStemFromVaultPath(vaultPath);
     const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? fileStem);
-
-    new Notice(`Syncing file mirror for ${vaultPath}...`, 5000);
     await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, mirrorFileName);
 
     let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
@@ -456,7 +442,7 @@ export default class VaultPublisherPlugin extends Plugin {
     const nowIso = new Date().toISOString();
 
     if (!repoState.hasOrigin) {
-      new Notice(`Creating or linking GitHub repo for file ${vaultPath}...`, 6000);
+      new Notice(`Connecting file ${vaultPath} to GitHub...`, 5000);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         mirrorAbsolutePath,
         fileStem,
@@ -482,6 +468,7 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
+    new Notice(`Pushing file repo ${vaultPath}...`, 5000);
     const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
     if (pushResult.status === "failed") {
       new Notice(pushResult.error ?? "File push failed.", 12000);
@@ -662,7 +649,7 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
-    new Notice("Scanning vault for standalone repositories...", 5000);
+    new Notice("Pushing all repositories...", 5000);
     const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) =>
         this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",

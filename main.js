@@ -856,7 +856,6 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     this.configStore = new ConfigStore(this);
     await this.configStore.load();
     this.gitService = new GitService();
-    void this.noticePrerequisiteIssues();
     this.addCommand({
       id: "publish-directory",
       name: "Publish Directory to GitHub",
@@ -884,12 +883,6 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
         });
       }
     });
-  }
-  async noticePrerequisiteIssues() {
-    const status = await this.gitService.checkPrerequisites();
-    if (!status.ok && status.message) {
-      new import_obsidian3.Notice(status.message, 12e3);
-    }
   }
   async ensurePrerequisites() {
     const status = await this.gitService.checkPrerequisites();
@@ -1064,7 +1057,6 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       target = await this.chooseTarget();
     } else {
       target = defaultTarget;
-      new import_obsidian3.Notice(`Using active target ${this.formatTargetLabel(target)}`, 3500);
     }
     if (!target) {
       return;
@@ -1078,7 +1070,6 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Could not resolve the vault base path.");
       return;
     }
-    new import_obsidian3.Notice(`Preparing publish for ${this.formatTargetLabel(target)}`, 3500);
     if (target.targetType === "directory") {
       await this.publishDirectoryTarget(target.vaultPath, vaultBasePath);
       return;
@@ -1105,7 +1096,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      new import_obsidian3.Notice(`Configuring repo for directory ${vaultPath}...`, 6e3);
+      new import_obsidian3.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
         await this.gitService.initRepo(targetPath);
@@ -1130,7 +1121,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice(`Published ${vaultPath} -> ${repoUrl2}${suffix}`, 8e3);
       return;
     }
-    new import_obsidian3.Notice(`Pushing updates for ${vaultPath}...`, 5e3);
+    new import_obsidian3.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
     const pushResult = await this.gitService.pushDirectory(targetPath, folderName);
     if (pushResult.status === "failed") {
       new import_obsidian3.Notice(pushResult.error ?? "Push failed.", 12e3);
@@ -1175,7 +1166,6 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     const fileStem = fileStemFromVaultPath(vaultPath);
     const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? fileStem);
-    new import_obsidian3.Notice(`Syncing file mirror for ${vaultPath}...`, 5e3);
     await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, mirrorFileName);
     let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
@@ -1188,7 +1178,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasOrigin) {
-      new import_obsidian3.Notice(`Creating or linking GitHub repo for file ${vaultPath}...`, 6e3);
+      new import_obsidian3.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         mirrorAbsolutePath,
         fileStem,
@@ -1211,6 +1201,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice(`Published file ${vaultPath} -> ${repoUrl2}${suffix}`, 9e3);
       return;
     }
+    new import_obsidian3.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
     const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
     if (pushResult.status === "failed") {
       new import_obsidian3.Notice(pushResult.error ?? "File push failed.", 12e3);
@@ -1357,7 +1348,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("Could not resolve the vault base path.");
       return;
     }
-    new import_obsidian3.Notice("Scanning vault for standalone repositories...", 5e3);
+    new import_obsidian3.Notice("Pushing all repositories...", 5e3);
     const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",
       resolveBaseRepoName: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath)
