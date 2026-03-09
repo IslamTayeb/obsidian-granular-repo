@@ -14,6 +14,8 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
 
   private didChoose = false;
 
+  private keydownHandler?: (event: KeyboardEvent) => void;
+
   constructor(app: App, options: PublishTargetItem[], defaultPath?: string) {
     super(app);
     this.options = [...options];
@@ -22,9 +24,23 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
     this.setPlaceholder("Select a file or folder to publish");
     this.setInstructions([
       { command: "Type", purpose: "Search files and folders" },
-      { command: "Enter", purpose: "Select target" },
+      { command: "Enter/Tab", purpose: "Select target" },
       { command: "Esc", purpose: "Cancel" },
     ]);
+  }
+
+  onOpen(): void {
+    super.onOpen();
+    this.keydownHandler = (event: KeyboardEvent) => {
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      event.preventDefault();
+      this.selectActiveSuggestion(event);
+    };
+
+    this.inputEl.addEventListener("keydown", this.keydownHandler);
   }
 
   getItems(): PublishTargetItem[] {
@@ -57,6 +73,11 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
   }
 
   onClose(): void {
+    if (this.keydownHandler) {
+      this.inputEl.removeEventListener("keydown", this.keydownHandler);
+      this.keydownHandler = undefined;
+    }
+
     super.onClose();
 
     if (!this.didChoose) {

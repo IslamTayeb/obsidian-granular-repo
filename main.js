@@ -50,9 +50,20 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
     this.setPlaceholder("Select a file or folder to publish");
     this.setInstructions([
       { command: "Type", purpose: "Search files and folders" },
-      { command: "Enter", purpose: "Select target" },
+      { command: "Enter/Tab", purpose: "Select target" },
       { command: "Esc", purpose: "Cancel" }
     ]);
+  }
+  onOpen() {
+    super.onOpen();
+    this.keydownHandler = (event) => {
+      if (event.key !== "Tab") {
+        return;
+      }
+      event.preventDefault();
+      this.selectActiveSuggestion(event);
+    };
+    this.inputEl.addEventListener("keydown", this.keydownHandler);
   }
   getItems() {
     if (!this.defaultPath) {
@@ -80,6 +91,10 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
     this.resolveSelection?.(item);
   }
   onClose() {
+    if (this.keydownHandler) {
+      this.inputEl.removeEventListener("keydown", this.keydownHandler);
+      this.keydownHandler = void 0;
+    }
     super.onClose();
     if (!this.didChoose) {
       this.resolveSelection?.(null);
@@ -1059,6 +1074,9 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       target = defaultTarget;
     }
     if (!target) {
+      if (options?.forcePicker) {
+        new import_obsidian3.Notice("Publish cancelled.");
+      }
       return;
     }
     if (target.targetType === "directory" && isVaultRoot(target.vaultPath)) {

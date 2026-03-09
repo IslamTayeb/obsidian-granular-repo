@@ -293,6 +293,9 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     if (!target) {
+      if (options?.forcePicker) {
+        new Notice("Publish cancelled.");
+      }
       return;
     }
 
