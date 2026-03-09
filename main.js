@@ -36,6 +36,7 @@ module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
 var import_node_crypto = __toESM(require("node:crypto"), 1);
+var import_promises2 = __toESM(require("node:fs/promises"), 1);
 var import_node_path3 = __toESM(require("node:path"), 1);
 var import_obsidian3 = require("obsidian");
 
@@ -83,8 +84,16 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
     });
   }
   getItemText(item) {
-    const prefix = item.kind === "directory" ? "DIR" : "FILE";
-    return `[${prefix}] ${item.path}`;
+    return item.path;
+  }
+  renderSuggestion(match, el) {
+    const item = match.item;
+    el.empty();
+    const kindLabel = item.kind === "directory" ? "DIR" : "FILE";
+    const pathSpan = el.createSpan({ text: item.path });
+    pathSpan.addClass("vault-publisher-target-path");
+    const kindSpan = el.createSpan({ text: kindLabel });
+    kindSpan.addClass("vault-publisher-target-kind");
   }
   onChooseItem(item) {
     this.didChoose = true;
@@ -98,21 +107,10 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
     if (!this.didChoose) {
       const normalizedQuery = this.normalizeQuery(this.inputEl.value);
       if (normalizedQuery) {
-        const exactMatch = this.options.find(
-          (option) => this.normalizeQuery(option.path) === normalizedQuery
-        );
-        if (exactMatch) {
+        const resolved = this.resolveQueryToOption(normalizedQuery);
+        if (resolved) {
           this.didChoose = true;
-          this.resolveSelection?.(exactMatch);
-          super.onClose();
-          return;
-        }
-        const prefixMatches = this.options.filter(
-          (option) => this.normalizeQuery(option.path).startsWith(normalizedQuery)
-        );
-        if (prefixMatches.length === 1) {
-          this.didChoose = true;
-          this.resolveSelection?.(prefixMatches[0]);
+          this.resolveSelection?.(resolved);
           super.onClose();
           return;
         }
@@ -137,6 +135,111 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
   }
   normalizeQuery(value) {
     return value.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "").trim();
+  }
+  normalizeForCompare(value) {
+    return this.normalizeQuery(value).toLowerCase();
+  }
+  resolveQueryToOption(query) {
+    const normalizedQuery = this.normalizeForCompare(query);
+    const exactMatch = this.options.find(
+      (option) => this.normalizeForCompare(option.path) === normalizedQuery
+    );
+    if (exactMatch) {
+      return exactMatch;
+    }
+    const relativeMatch = this.resolveRelativeToDefaultPath(normalizedQuery);
+    if (relativeMatch) {
+      return relativeMatch;
+    }
+    const prefixMatches = this.options.filter(
+      (option) => this.normalizeForCompare(option.path).startsWith(normalizedQuery)
+    );
+    const bestPrefixMatch = this.pickBestCandidate(prefixMatches);
+    if (bestPrefixMatch) {
+      return bestPrefixMatch;
+    }
+    const basenameMatches = this.options.filter((option) => {
+      const normalizedPath = this.normalizeForCompare(option.path);
+      const segments = normalizedPath.split("/");
+      return segments[segments.length - 1] === normalizedQuery;
+    });
+    const bestBasenameMatch = this.pickBestCandidate(basenameMatches);
+    if (bestBasenameMatch) {
+      return bestBasenameMatch;
+    }
+    const suffixMatches = this.options.filter((option) => {
+      const normalizedPath = this.normalizeForCompare(option.path);
+      return normalizedPath.endsWith(`/${normalizedQuery}`);
+    });
+    const bestSuffixMatch = this.pickBestCandidate(suffixMatches);
+    if (bestSuffixMatch) {
+      return bestSuffixMatch;
+    }
+    return null;
+  }
+  resolveRelativeToDefaultPath(normalizedQuery) {
+    const defaultDirectory = this.getDefaultDirectory();
+    if (!defaultDirectory) {
+      return null;
+    }
+    const candidatePath = `${defaultDirectory}/${normalizedQuery}`.replace(/\/+/g, "/");
+    const candidateMatch = this.options.find(
+      (option) => this.normalizeForCompare(option.path) === this.normalizeForCompare(candidatePath)
+    );
+    return candidateMatch ?? null;
+  }
+  getDefaultDirectory() {
+    if (!this.defaultPath) {
+      return null;
+    }
+    const defaultPathNormalized = this.normalizeQuery(this.defaultPath);
+    const defaultOption = this.options.find(
+      (option) => this.normalizeForCompare(option.path) === this.normalizeForCompare(defaultPathNormalized)
+    );
+    if (defaultOption?.kind === "file") {
+      const segments = defaultPathNormalized.split("/");
+      const parentDirectory = segments.slice(0, -1).join("/");
+      return parentDirectory || null;
+    }
+    return defaultPathNormalized || null;
+  }
+  pickBestCandidate(candidates) {
+    if (candidates.length === 1) {
+      return candidates[0];
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    const defaultDirectory = this.getDefaultDirectory();
+    if (!defaultDirectory) {
+      return null;
+    }
+    const ranked = [...candidates].map((candidate) => ({
+      candidate,
+      distance: this.computePathDistance(candidate.path, defaultDirectory)
+    })).sort((left, right) => {
+      if (left.distance !== right.distance) {
+        return left.distance - right.distance;
+      }
+      if (left.candidate.kind !== right.candidate.kind) {
+        return left.candidate.kind === "directory" ? -1 : 1;
+      }
+      return left.candidate.path.localeCompare(right.candidate.path);
+    });
+    if (ranked.length > 1 && ranked[0].distance === ranked[1].distance) {
+      return null;
+    }
+    return ranked[0].candidate;
+  }
+  computePathDistance(leftPath, rightPath) {
+    const leftSegments = this.normalizeForCompare(leftPath).split("/").filter((segment) => segment.length > 0);
+    const rightSegments = this.normalizeForCompare(rightPath).split("/").filter((segment) => segment.length > 0);
+    let commonPrefixLength = 0;
+    const minLength = Math.min(leftSegments.length, rightSegments.length);
+    while (commonPrefixLength < minLength && leftSegments[commonPrefixLength] === rightSegments[commonPrefixLength]) {
+      commonPrefixLength += 1;
+    }
+    return leftSegments.length - commonPrefixLength + (rightSegments.length - commonPrefixLength);
   }
 };
 
@@ -1059,6 +1162,167 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       vaultPath: normalizedPath
     };
   }
+  getDefaultDirectoryPath(target) {
+    if (!target) {
+      return null;
+    }
+    if (target.targetType === "directory") {
+      return normalizeVaultPath(target.vaultPath) || null;
+    }
+    const normalizedFilePath = normalizeVaultPath(target.vaultPath);
+    const segments = normalizedFilePath.split("/");
+    const parentDirectory = segments.slice(0, -1).join("/");
+    return parentDirectory || null;
+  }
+  async resolveExactTargetByVaultPath(vaultPath) {
+    const normalizedPath = normalizeVaultPath(vaultPath);
+    if (!normalizedPath) {
+      return null;
+    }
+    const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
+    if (abstractItem instanceof import_obsidian3.TFolder && this.isSelectableDirectory(normalizedPath)) {
+      return {
+        targetType: "directory",
+        vaultPath: normalizedPath
+      };
+    }
+    if (abstractItem instanceof import_obsidian3.TFile && this.isSelectableFile(normalizedPath)) {
+      return {
+        targetType: "file",
+        vaultPath: normalizedPath
+      };
+    }
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return null;
+    }
+    const absolutePath = absolutePathForVaultPath(vaultBasePath, normalizedPath);
+    if (!ensureInsideVault(vaultBasePath, absolutePath)) {
+      return null;
+    }
+    try {
+      const stats = await import_promises2.default.stat(absolutePath);
+      if (stats.isDirectory() && this.isSelectableDirectory(normalizedPath)) {
+        return {
+          targetType: "directory",
+          vaultPath: normalizedPath
+        };
+      }
+      if (stats.isFile() && this.isSelectableFile(normalizedPath)) {
+        return {
+          targetType: "file",
+          vaultPath: normalizedPath
+        };
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  async findUniqueTargetByBasename(query) {
+    const normalizedQuery = normalizeVaultPath(query);
+    if (!normalizedQuery || normalizedQuery.includes("/")) {
+      return null;
+    }
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return null;
+    }
+    let foundMatch = null;
+    let hasMultipleMatches = false;
+    const walk = async (absoluteDirectory, relativeDirectory) => {
+      if (hasMultipleMatches) {
+        return;
+      }
+      let entries;
+      try {
+        entries = await import_promises2.default.readdir(absoluteDirectory, { withFileTypes: true, encoding: "utf8" });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        if (hasMultipleMatches) {
+          return;
+        }
+        if (entry.name.startsWith(".") || entry.name === "node_modules") {
+          continue;
+        }
+        const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        const normalizedPath = normalizeVaultPath(relativePath);
+        if (entry.isDirectory()) {
+          if (entry.name === normalizedQuery && this.isSelectableDirectory(normalizedPath)) {
+            const candidate = {
+              targetType: "directory",
+              vaultPath: normalizedPath
+            };
+            if (foundMatch) {
+              hasMultipleMatches = true;
+              return;
+            }
+            foundMatch = candidate;
+          }
+          await walk(import_node_path3.default.join(absoluteDirectory, entry.name), relativePath);
+          continue;
+        }
+        if (entry.isFile() && entry.name === normalizedQuery && this.isSelectableFile(normalizedPath)) {
+          const candidate = {
+            targetType: "file",
+            vaultPath: normalizedPath
+          };
+          if (foundMatch) {
+            hasMultipleMatches = true;
+            return;
+          }
+          foundMatch = candidate;
+        }
+      }
+    };
+    await walk(vaultBasePath, "");
+    if (hasMultipleMatches) {
+      return null;
+    }
+    return foundMatch;
+  }
+  async resolveTypedTargetFromQuery(unmatchedQuery, defaultTarget, selectableTargets) {
+    const normalizedQuery = normalizeVaultPath(unmatchedQuery);
+    if (!normalizedQuery) {
+      return null;
+    }
+    const exactMatch = await this.resolveExactTargetByVaultPath(normalizedQuery);
+    if (exactMatch) {
+      return exactMatch;
+    }
+    const defaultDirectory = this.getDefaultDirectoryPath(defaultTarget);
+    if (defaultDirectory) {
+      const relativeCandidate = normalizeVaultPath(`${defaultDirectory}/${normalizedQuery}`);
+      const relativeMatch = await this.resolveExactTargetByVaultPath(relativeCandidate);
+      if (relativeMatch) {
+        return relativeMatch;
+      }
+    }
+    if (normalizedQuery.includes("/")) {
+      return null;
+    }
+    const normalizedQueryLower = normalizedQuery.toLowerCase();
+    const basenameMatches = selectableTargets.filter((target) => {
+      const normalizedTargetPath = normalizeVaultPath(target.path).toLowerCase();
+      const segments = normalizedTargetPath.split("/");
+      return segments[segments.length - 1] === normalizedQueryLower;
+    });
+    if (basenameMatches.length === 1) {
+      return this.resolveTargetSelection(basenameMatches[0]);
+    }
+    if (basenameMatches.length > 1 && defaultDirectory) {
+      const normalizedDefaultDirectory = normalizeVaultPath(defaultDirectory).toLowerCase();
+      const scopedMatches = basenameMatches.filter(
+        (target) => normalizeVaultPath(target.path).toLowerCase().startsWith(`${normalizedDefaultDirectory}/`)
+      );
+      if (scopedMatches.length === 1) {
+        return this.resolveTargetSelection(scopedMatches[0]);
+      }
+    }
+    return this.findUniqueTargetByBasename(normalizedQuery);
+  }
   async chooseTarget() {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
@@ -1071,6 +1335,14 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     if (!selected) {
       const unmatchedQuery = modal.getUnmatchedQuery();
       if (unmatchedQuery) {
+        const resolvedFromQuery = await this.resolveTypedTargetFromQuery(
+          unmatchedQuery,
+          defaultTarget,
+          selectableTargets
+        );
+        if (resolvedFromQuery) {
+          return resolvedFromQuery;
+        }
         new import_obsidian3.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
       }
       return null;

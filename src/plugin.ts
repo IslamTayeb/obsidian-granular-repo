@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import fsp from "node:fs/promises";
 import path from "node:path";
 
 import { App, Notice, Plugin, TFile, TFolder } from "obsidian";
@@ -234,6 +235,208 @@ export default class VaultPublisherPlugin extends Plugin {
     };
   }
 
+  private getDefaultDirectoryPath(target: ResolvedPublishTarget | undefined): string | null {
+    if (!target) {
+      return null;
+    }
+
+    if (target.targetType === "directory") {
+      return normalizeVaultPath(target.vaultPath) || null;
+    }
+
+    const normalizedFilePath = normalizeVaultPath(target.vaultPath);
+    const segments = normalizedFilePath.split("/");
+    const parentDirectory = segments.slice(0, -1).join("/");
+    return parentDirectory || null;
+  }
+
+  private async resolveExactTargetByVaultPath(vaultPath: string): Promise<ResolvedPublishTarget | null> {
+    const normalizedPath = normalizeVaultPath(vaultPath);
+    if (!normalizedPath) {
+      return null;
+    }
+
+    const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
+    if (abstractItem instanceof TFolder && this.isSelectableDirectory(normalizedPath)) {
+      return {
+        targetType: "directory",
+        vaultPath: normalizedPath,
+      };
+    }
+
+    if (abstractItem instanceof TFile && this.isSelectableFile(normalizedPath)) {
+      return {
+        targetType: "file",
+        vaultPath: normalizedPath,
+      };
+    }
+
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return null;
+    }
+
+    const absolutePath = absolutePathForVaultPath(vaultBasePath, normalizedPath);
+    if (!ensureInsideVault(vaultBasePath, absolutePath)) {
+      return null;
+    }
+
+    try {
+      const stats = await fsp.stat(absolutePath);
+      if (stats.isDirectory() && this.isSelectableDirectory(normalizedPath)) {
+        return {
+          targetType: "directory",
+          vaultPath: normalizedPath,
+        };
+      }
+
+      if (stats.isFile() && this.isSelectableFile(normalizedPath)) {
+        return {
+          targetType: "file",
+          vaultPath: normalizedPath,
+        };
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
+  }
+
+  private async findUniqueTargetByBasename(query: string): Promise<ResolvedPublishTarget | null> {
+    const normalizedQuery = normalizeVaultPath(query);
+    if (!normalizedQuery || normalizedQuery.includes("/")) {
+      return null;
+    }
+
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return null;
+    }
+
+    let foundMatch: ResolvedPublishTarget | null = null;
+    let hasMultipleMatches = false;
+
+    const walk = async (absoluteDirectory: string, relativeDirectory: string): Promise<void> => {
+      if (hasMultipleMatches) {
+        return;
+      }
+
+      let entries;
+      try {
+        entries = await fsp.readdir(absoluteDirectory, { withFileTypes: true, encoding: "utf8" });
+      } catch {
+        return;
+      }
+
+      for (const entry of entries) {
+        if (hasMultipleMatches) {
+          return;
+        }
+
+        if (entry.name.startsWith(".") || entry.name === "node_modules") {
+          continue;
+        }
+
+        const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        const normalizedPath = normalizeVaultPath(relativePath);
+
+        if (entry.isDirectory()) {
+          if (entry.name === normalizedQuery && this.isSelectableDirectory(normalizedPath)) {
+            const candidate: ResolvedPublishTarget = {
+              targetType: "directory",
+              vaultPath: normalizedPath,
+            };
+
+            if (foundMatch) {
+              hasMultipleMatches = true;
+              return;
+            }
+
+            foundMatch = candidate;
+          }
+
+          await walk(path.join(absoluteDirectory, entry.name), relativePath);
+          continue;
+        }
+
+        if (entry.isFile() && entry.name === normalizedQuery && this.isSelectableFile(normalizedPath)) {
+          const candidate: ResolvedPublishTarget = {
+            targetType: "file",
+            vaultPath: normalizedPath,
+          };
+
+          if (foundMatch) {
+            hasMultipleMatches = true;
+            return;
+          }
+
+          foundMatch = candidate;
+        }
+      }
+    };
+
+    await walk(vaultBasePath, "");
+    if (hasMultipleMatches) {
+      return null;
+    }
+
+    return foundMatch;
+  }
+
+  private async resolveTypedTargetFromQuery(
+    unmatchedQuery: string,
+    defaultTarget: ResolvedPublishTarget | undefined,
+    selectableTargets: PublishTargetItem[],
+  ): Promise<ResolvedPublishTarget | null> {
+    const normalizedQuery = normalizeVaultPath(unmatchedQuery);
+    if (!normalizedQuery) {
+      return null;
+    }
+
+    const exactMatch = await this.resolveExactTargetByVaultPath(normalizedQuery);
+    if (exactMatch) {
+      return exactMatch;
+    }
+
+    const defaultDirectory = this.getDefaultDirectoryPath(defaultTarget);
+    if (defaultDirectory) {
+      const relativeCandidate = normalizeVaultPath(`${defaultDirectory}/${normalizedQuery}`);
+      const relativeMatch = await this.resolveExactTargetByVaultPath(relativeCandidate);
+      if (relativeMatch) {
+        return relativeMatch;
+      }
+    }
+
+    if (normalizedQuery.includes("/")) {
+      return null;
+    }
+
+    const normalizedQueryLower = normalizedQuery.toLowerCase();
+    const basenameMatches = selectableTargets.filter((target) => {
+      const normalizedTargetPath = normalizeVaultPath(target.path).toLowerCase();
+      const segments = normalizedTargetPath.split("/");
+      return segments[segments.length - 1] === normalizedQueryLower;
+    });
+
+    if (basenameMatches.length === 1) {
+      return this.resolveTargetSelection(basenameMatches[0]);
+    }
+
+    if (basenameMatches.length > 1 && defaultDirectory) {
+      const normalizedDefaultDirectory = normalizeVaultPath(defaultDirectory).toLowerCase();
+      const scopedMatches = basenameMatches.filter((target) =>
+        normalizeVaultPath(target.path).toLowerCase().startsWith(`${normalizedDefaultDirectory}/`),
+      );
+
+      if (scopedMatches.length === 1) {
+        return this.resolveTargetSelection(scopedMatches[0]);
+      }
+    }
+
+    return this.findUniqueTargetByBasename(normalizedQuery);
+  }
+
   private async chooseTarget(): Promise<ResolvedPublishTarget | null> {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
@@ -248,6 +451,15 @@ export default class VaultPublisherPlugin extends Plugin {
     if (!selected) {
       const unmatchedQuery = modal.getUnmatchedQuery();
       if (unmatchedQuery) {
+        const resolvedFromQuery = await this.resolveTypedTargetFromQuery(
+          unmatchedQuery,
+          defaultTarget,
+          selectableTargets,
+        );
+        if (resolvedFromQuery) {
+          return resolvedFromQuery;
+        }
+
         new Notice(`No matching target found for: ${unmatchedQuery}`, 6000);
       }
       return null;

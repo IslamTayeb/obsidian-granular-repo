@@ -7,3 +7,13 @@
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.vault-publisher-target-path {
+  margin-right: 8px;
+}
+
+.vault-publisher-target-kind {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  letter-spacing: 0.04em;
+}
