@@ -88,7 +88,7 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
   }
   onChooseItem(item) {
     this.didChoose = true;
-    this.resolveSelection?.(item);
+    this.chosenItem = item;
   }
   onClose() {
     if (this.keydownHandler) {
@@ -120,9 +120,11 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
       }
     }
     super.onClose();
-    if (!this.didChoose) {
-      this.resolveSelection?.(null);
+    if (this.didChoose && this.chosenItem) {
+      this.resolveSelection?.(this.chosenItem);
+      return;
     }
+    this.resolveSelection?.(null);
   }
   openAndGetValue() {
     return new Promise((resolve) => {

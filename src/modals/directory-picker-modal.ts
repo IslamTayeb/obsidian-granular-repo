@@ -18,6 +18,8 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
 
   private unmatchedQuery?: string;
 
+  private chosenItem?: PublishTargetItem;
+
   constructor(app: App, options: PublishTargetItem[], defaultPath?: string) {
     super(app);
     this.options = [...options];
@@ -71,7 +73,7 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
 
   onChooseItem(item: PublishTargetItem): void {
     this.didChoose = true;
-    this.resolveSelection?.(item);
+    this.chosenItem = item;
   }
 
   onClose(): void {
@@ -109,9 +111,12 @@ export class DirectoryPickerModal extends FuzzySuggestModal<PublishTargetItem> {
 
     super.onClose();
 
-    if (!this.didChoose) {
-      this.resolveSelection?.(null);
+    if (this.didChoose && this.chosenItem) {
+      this.resolveSelection?.(this.chosenItem);
+      return;
     }
+
+    this.resolveSelection?.(null);
   }
 
   openAndGetValue(): Promise<PublishTargetItem | null> {
