@@ -190,6 +190,64 @@ describe("GitService", () => {
     }
   });
 
+  it("removes only the .git directory during local repo cleanup", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vault-publisher-cleanup-"));
+
+    try {
+      const repoDir = path.join(tempRoot, "alpha");
+      await fs.mkdir(path.join(repoDir, ".git"), { recursive: true });
+      await fs.writeFile(path.join(repoDir, "note.md"), "hello");
+
+      const service = new GitService(async () => ({ stdout: "", stderr: "" }));
+      await service.removeGitDirectory(repoDir);
+
+      await expect(fs.readFile(path.join(repoDir, "note.md"), "utf8")).resolves.toBe("hello");
+      await expect(fs.stat(path.join(repoDir, ".git"))).rejects.toThrow();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("treats missing GitHub repos as already deleted", async () => {
+    const runner: ExecRunner = async (command, args) => {
+      if (commandKey(command, args) === "gh repo delete user/blog --yes") {
+        throw {
+          message: "missing repo",
+          stderr: "GraphQL: Could not resolve to a Repository with the name 'user/blog'.",
+          stdout: "",
+          code: 1,
+        };
+      }
+
+      return { stdout: "", stderr: "" };
+    };
+
+    const service = new GitService(runner);
+    const result = await service.deleteGitHubRepo("user/blog");
+
+    expect(result.status).toBe("not_found");
+  });
+
+  it("finds mirror repos inside the plugin mirror root", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vault-publisher-mirrors-"));
+
+    try {
+      const mirrorRoot = path.join(tempRoot, ".obsidian", "plugins", "vault-publisher", "mirrors");
+      await fs.mkdir(path.join(mirrorRoot, "idea-abc12345", ".git"), { recursive: true });
+      await fs.mkdir(path.join(mirrorRoot, "nested", "draft-def67890", ".git"), { recursive: true });
+
+      const service = new GitService(async () => ({ stdout: "", stderr: "" }));
+      const mirrors = await service.findMirrorRepos(tempRoot, ".obsidian/plugins/vault-publisher/mirrors");
+
+      expect(mirrors).toEqual([
+        ".obsidian/plugins/vault-publisher/mirrors/idea-abc12345",
+        ".obsidian/plugins/vault-publisher/mirrors/nested/draft-def67890",
+      ]);
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("push-all continues when one repo fails", async () => {
     const service = new GitService(async () => ({ stdout: "", stderr: "" }));
 

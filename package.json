@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "install:obsidian": "bash scripts/install-to-obsidian.sh"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

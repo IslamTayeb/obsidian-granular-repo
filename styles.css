@@ -17,3 +17,71 @@
   font-size: var(--font-ui-smaller);
   letter-spacing: 0.04em;
 }
+
+.vault-publisher-section {
+  margin-top: 24px;
+  padding-top: 12px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.vault-publisher-section-description {
+  color: var(--text-muted);
+  margin: 0 0 12px;
+}
+
+.vault-publisher-entry {
+  align-items: flex-start;
+}
+
+.vault-publisher-entry .setting-item-info {
+  min-width: 0;
+}
+
+.vault-publisher-entry-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.vault-publisher-entry-path {
+  word-break: break-word;
+}
+
+.vault-publisher-entry-badge {
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1;
+  padding: 3px 8px;
+}
+
+.vault-publisher-entry-line {
+  margin-top: 4px;
+  word-break: break-word;
+}
+
+.vault-publisher-entry-label {
+  color: var(--text-muted);
+}
+
+.vault-publisher-entry-warning {
+  color: var(--text-error);
+  margin-top: 8px;
+}
+
+.vault-publisher-confirm-list {
+  margin: 0 0 16px;
+  padding-left: 20px;
+}
+
+.vault-publisher-clickable-notice {
+  cursor: pointer;
+}
+
+.vault-publisher-notice-link {
+  cursor: pointer;
+  text-decoration: underline;
+}

@@ -8,6 +8,7 @@ export interface PublishedTargetRecord {
   remote: "origin";
   visibility: RepoVisibility;
   lastPushed: string;
+  originUrl?: string;
   mirrorPath?: string;
   mirrorFileName?: string;
 }
@@ -54,4 +55,30 @@ export interface LegacyPublishedDirRecord {
   remote: "origin";
   visibility: RepoVisibility;
   lastPushed: string;
+}
+
+export type RepoInventorySourceKind =
+  | "tracked-directory"
+  | "tracked-file"
+  | "scanned-directory"
+  | "orphan-mirror";
+
+export interface RepoInventoryEntry {
+  id: string;
+  sourceKind: RepoInventorySourceKind;
+  targetType: PublishTargetType;
+  vaultPath: string;
+  mirrorPath?: string;
+  repoName?: string;
+  visibility?: RepoVisibility;
+  localRepoPath: string;
+  localRepoVaultPath: string;
+  liveOriginUrl: string | null;
+  storedOriginUrl: string | null;
+  githubRepoSlug: string | null;
+  hasLocalGit: boolean;
+  hasOrigin: boolean;
+  isGitHubOrigin: boolean;
+  canUnpublish: boolean;
+  disabledReason?: string;
 }

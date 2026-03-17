@@ -20,5 +20,7 @@ describe("repo-name-utils", () => {
     expect(parseRepoNameFromOrigin("git@github.com:user/blog.git")).toBe("blog");
     expect(parseRepoNameFromOrigin("https://github.com/user/blog.git")).toBe("blog");
     expect(parseRepoNameFromOrigin("ssh://git@github.com/user/blog.git")).toBe("blog");
+    expect(parseRepoNameFromOrigin("https://ghp_token@github.com/user/blog.git")).toBe("blog");
+    expect(parseRepoNameFromOrigin("http://ghp_token@github.com/user/blog")).toBe("blog");
   });
 });

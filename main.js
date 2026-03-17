@@ -38,7 +38,10 @@ module.exports = __toCommonJS(main_exports);
 var import_node_crypto = __toESM(require("node:crypto"), 1);
 var import_promises2 = __toESM(require("node:fs/promises"), 1);
 var import_node_path3 = __toESM(require("node:path"), 1);
-var import_obsidian3 = require("obsidian");
+var import_obsidian5 = require("obsidian");
+
+// src/constants.ts
+var MIRROR_ROOT = ".obsidian/plugins/vault-publisher/mirrors";
 
 // src/modals/directory-picker-modal.ts
 var import_obsidian = require("obsidian");
@@ -363,6 +366,9 @@ function isValidTargetRecord(value) {
   if (!isTargetType(candidate.targetType) || typeof candidate.vaultPath !== "string" || typeof candidate.repoName !== "string" || candidate.visibility !== "public" && candidate.visibility !== "private" || typeof candidate.lastPushed !== "string") {
     return false;
   }
+  if (candidate.originUrl !== void 0 && typeof candidate.originUrl !== "string") {
+    return false;
+  }
   if (candidate.targetType === "file") {
     return typeof candidate.mirrorPath === "string" && candidate.mirrorPath.length > 0 && typeof candidate.mirrorFileName === "string" && candidate.mirrorFileName.length > 0;
   }
@@ -374,6 +380,7 @@ function normalizeTargetRecord(record) {
     targetType: record.targetType,
     vaultPath: normalizeVaultPath(record.vaultPath),
     remote: "origin",
+    originUrl: typeof record.originUrl === "string" && record.originUrl.length > 0 ? record.originUrl : void 0,
     mirrorPath: record.targetType === "file" ? normalizeVaultPath(record.mirrorPath ?? "") : void 0,
     mirrorFileName: record.targetType === "file" ? record.mirrorFileName : void 0
   };
@@ -441,6 +448,14 @@ var ConfigStore = class {
     }
     this.data.publishedTargets.push(normalized);
   }
+  removeTarget(targetType, vaultPath) {
+    const normalized = normalizeVaultPath(vaultPath);
+    const initialLength = this.data.publishedTargets.length;
+    this.data.publishedTargets = this.data.publishedTargets.filter(
+      (record) => !(record.targetType === targetType && record.vaultPath === normalized)
+    );
+    return this.data.publishedTargets.length !== initialLength;
+  }
 };
 
 // src/services/git-service.ts
@@ -468,24 +483,49 @@ function buildCommitMessage(folderName, date = /* @__PURE__ */ new Date()) {
 }
 
 // src/utils/github-url.ts
-var GITHUB_PATTERNS = [
-  /^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i,
-  /^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i,
-  /^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i
-];
-function isGitHubOrigin(originUrl) {
+function parseRepoPathname(pathname) {
+  const segments = pathname.replace(/^\/+/, "").split("/").filter((segment) => segment.length > 0);
+  if (segments.length < 2) {
+    return null;
+  }
+  const owner = segments[0];
+  const repo = segments[1].replace(/\.git$/i, "");
+  if (!owner || !repo) {
+    return null;
+  }
+  return `${owner}/${repo}`;
+}
+function parseGitHubRepoSlug(originUrl) {
   const trimmed = originUrl.trim();
-  return GITHUB_PATTERNS.some((pattern) => pattern.test(trimmed));
+  if (!trimmed) {
+    return null;
+  }
+  const scpMatch = trimmed.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
+  if (scpMatch) {
+    return `${scpMatch[1]}/${scpMatch[2]}`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const protocol = parsed.protocol.toLowerCase();
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname !== "github.com") {
+      return null;
+    }
+    if (protocol !== "http:" && protocol !== "https:" && protocol !== "ssh:") {
+      return null;
+    }
+    return parseRepoPathname(parsed.pathname);
+  } catch {
+    return null;
+  }
+}
+function isGitHubOrigin(originUrl) {
+  return parseGitHubRepoSlug(originUrl) !== null;
 }
 function originToWebUrl(originUrl) {
-  const trimmed = originUrl.trim();
-  for (const pattern of GITHUB_PATTERNS) {
-    const match = trimmed.match(pattern);
-    if (match) {
-      const owner = match[1];
-      const repo = match[2];
-      return `https://github.com/${owner}/${repo}`;
-    }
+  const slug = parseGitHubRepoSlug(originUrl);
+  if (slug) {
+    return `https://github.com/${slug}`;
   }
   return null;
 }
@@ -510,20 +550,12 @@ function repoNameCandidates(baseName, maxAttempts = 50) {
   return candidates;
 }
 function parseRepoNameFromOrigin(originUrl) {
-  const trimmed = originUrl.trim();
-  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return sshMatch[2];
+  const slug = parseGitHubRepoSlug(originUrl);
+  if (!slug) {
+    return null;
   }
-  const httpsMatch = trimmed.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (httpsMatch) {
-    return httpsMatch[2];
-  }
-  const sshProtocolMatch = trimmed.match(/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshProtocolMatch) {
-    return sshProtocolMatch[2];
-  }
-  return null;
+  const segments = slug.split("/");
+  return segments[1] ?? null;
 }
 
 // src/services/git-service.ts
@@ -624,6 +656,11 @@ function isRemoteAttachFailure(error) {
 ${error.stdout}`.toLowerCase();
   return output.includes('unable to add remote "origin"');
 }
+function isGitHubRepoNotFoundError(error) {
+  const output = `${error.stderr}
+${error.stdout}`.toLowerCase();
+  return output.includes("could not resolve to a repository") || output.includes("repository not found") || output.includes("was not found") || output.includes("http 404") || output.includes("not found");
+}
 var GitService = class {
   constructor(runner = defaultRunner) {
     this.runner = runner;
@@ -635,7 +672,7 @@ var GitService = class {
       throw errorFromUnknown(error, command, args, cwd);
     }
   }
-  async checkPrerequisites() {
+  async checkGitPrerequisites() {
     try {
       await this.run("git", ["--version"]);
     } catch (error) {
@@ -651,6 +688,11 @@ var GitService = class {
         message: commandError.displayMessage()
       };
     }
+    return {
+      ok: true
+    };
+  }
+  async checkGitHubPrerequisites() {
     try {
       await this.run("gh", ["--version"]);
       await this.run("gh", ["auth", "status"]);
@@ -666,6 +708,19 @@ var GitService = class {
         ok: false,
         message: "GitHub CLI (gh) not found or not authenticated. Run `gh auth login` in your terminal."
       };
+    }
+    return {
+      ok: true
+    };
+  }
+  async checkPrerequisites() {
+    const gitStatus = await this.checkGitPrerequisites();
+    if (!gitStatus.ok) {
+      return gitStatus;
+    }
+    const githubStatus = await this.checkGitHubPrerequisites();
+    if (!githubStatus.ok) {
+      return githubStatus;
     }
     return {
       ok: true
@@ -849,6 +904,57 @@ var GitService = class {
       return null;
     }
   }
+  async deleteGitHubRepo(repoSlug) {
+    try {
+      await this.run("gh", ["repo", "delete", repoSlug, "--yes"]);
+      return { status: "deleted" };
+    } catch (error) {
+      const commandError = errorFromUnknown(error, "gh", ["repo", "delete", repoSlug, "--yes"]);
+      if (isGitHubRepoNotFoundError(commandError)) {
+        return { status: "not_found" };
+      }
+      throw commandError;
+    }
+  }
+  async removeGitDirectory(targetDir) {
+    await import_promises.default.rm(import_node_path2.default.join(targetDir, ".git"), { recursive: true, force: true });
+  }
+  async removeDirectory(targetDir) {
+    await import_promises.default.rm(targetDir, { recursive: true, force: true });
+  }
+  async findStandaloneReposUnderRoot(rootPath, rootRelativePath, options) {
+    const repositories = /* @__PURE__ */ new Set();
+    const skipDirectoryNames = options?.skipDirectoryNames ?? /* @__PURE__ */ new Set();
+    const walk = async (currentPath, relativePath) => {
+      let entries;
+      try {
+        entries = await import_promises.default.readdir(currentPath, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      const hasLocalGitDir = entries.some((entry) => entry.isDirectory() && entry.name === ".git");
+      if (relativePath && hasLocalGitDir) {
+        const vaultRelativePath = rootRelativePath ? `${rootRelativePath}/${relativePath}` : relativePath;
+        repositories.add(vaultRelativePath);
+      }
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+        if (entry.name === ".git" || skipDirectoryNames.has(entry.name)) {
+          continue;
+        }
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        const childAbsolutePath = import_node_path2.default.join(currentPath, entry.name);
+        await walk(childAbsolutePath, childRelativePath);
+      }
+    };
+    await walk(rootPath, "");
+    return [...repositories].sort((left, right) => left.localeCompare(right));
+  }
   async linkLocalRepoWithoutOrigin(targetDir, folderName, baseRepoName, visibility) {
     await this.stageAll(targetDir);
     const stagedFiles = await this.getStagedFiles(targetDir);
@@ -915,35 +1021,21 @@ var GitService = class {
     }
   }
   async findStandaloneRepos(vaultBasePath) {
-    const repositories = /* @__PURE__ */ new Set();
-    const walk = async (currentPath, relativePath) => {
-      let entries;
-      try {
-        entries = await import_promises.default.readdir(currentPath, { withFileTypes: true });
-      } catch {
-        return;
+    return this.findStandaloneReposUnderRoot(vaultBasePath, "", {
+      skipDirectoryNames: /* @__PURE__ */ new Set([".obsidian", "node_modules"])
+    });
+  }
+  async findMirrorRepos(vaultBasePath, mirrorRootRelativePath) {
+    const mirrorRootPath = import_node_path2.default.join(vaultBasePath, mirrorRootRelativePath);
+    try {
+      const mirrorStats = await import_promises.default.stat(mirrorRootPath);
+      if (!mirrorStats.isDirectory()) {
+        return [];
       }
-      const hasLocalGitDir = entries.some((entry) => entry.isDirectory() && entry.name === ".git");
-      if (relativePath && hasLocalGitDir) {
-        repositories.add(relativePath);
-      }
-      for (const entry of entries) {
-        if (!entry.isDirectory()) {
-          continue;
-        }
-        if (entry.isSymbolicLink()) {
-          continue;
-        }
-        if (entry.name === ".git" || entry.name === ".obsidian" || entry.name === "node_modules") {
-          continue;
-        }
-        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-        const childAbsolutePath = import_node_path2.default.join(currentPath, entry.name);
-        await walk(childAbsolutePath, childRelativePath);
-      }
-    };
-    await walk(vaultBasePath, "");
-    return [...repositories].sort((left, right) => left.localeCompare(right));
+    } catch {
+      return [];
+    }
+    return this.findStandaloneReposUnderRoot(mirrorRootPath, mirrorRootRelativePath);
   }
   async pushAllRepos(vaultBasePath, options) {
     const repoPaths = await this.findStandaloneRepos(vaultBasePath);
@@ -995,9 +1087,461 @@ var GitService = class {
   }
 };
 
+// src/services/repo-inventory.ts
+var SOURCE_KIND_ORDER = {
+  "tracked-directory": 0,
+  "tracked-file": 1,
+  "scanned-directory": 2,
+  "orphan-mirror": 3
+};
+function buildEntryId(sourceKind, vaultPath) {
+  return `${sourceKind}:${normalizeVaultPath(vaultPath)}`;
+}
+function resolveUnpublishState(liveOriginUrl, storedOriginUrl) {
+  const githubRepoSlug = (liveOriginUrl ? parseGitHubRepoSlug(liveOriginUrl) : null) ?? (storedOriginUrl ? parseGitHubRepoSlug(storedOriginUrl) : null);
+  if (githubRepoSlug) {
+    return {
+      githubRepoSlug,
+      canUnpublish: true
+    };
+  }
+  const knownOrigin = liveOriginUrl ?? storedOriginUrl;
+  if (knownOrigin) {
+    return {
+      githubRepoSlug: null,
+      canUnpublish: false,
+      disabledReason: "Only GitHub remotes can be unpublished."
+    };
+  }
+  return {
+    githubRepoSlug: null,
+    canUnpublish: false,
+    disabledReason: "No GitHub remote is known for this repo."
+  };
+}
+async function buildEntry(sourceKind, target, vaultBasePath, resolveRepoState) {
+  const localRepoVaultPath = normalizeVaultPath(target.mirrorPath ?? target.vaultPath);
+  const localRepoPath = absolutePathForVaultPath(vaultBasePath, localRepoVaultPath);
+  const repoState = await resolveRepoState(localRepoPath);
+  const liveOriginUrl = repoState.originUrl ?? null;
+  const storedOriginUrl = target.storedOriginUrl ?? null;
+  const unpublishState = resolveUnpublishState(liveOriginUrl, storedOriginUrl);
+  return {
+    id: buildEntryId(sourceKind, target.vaultPath),
+    sourceKind,
+    targetType: target.targetType,
+    vaultPath: normalizeVaultPath(target.vaultPath),
+    mirrorPath: target.mirrorPath ? normalizeVaultPath(target.mirrorPath) : void 0,
+    repoName: target.repoName,
+    visibility: target.visibility,
+    localRepoPath,
+    localRepoVaultPath,
+    liveOriginUrl,
+    storedOriginUrl,
+    hasLocalGit: repoState.hasLocalGit,
+    hasOrigin: repoState.hasOrigin,
+    isGitHubOrigin: repoState.isGitHubOrigin,
+    ...unpublishState
+  };
+}
+async function buildRepoInventory(options) {
+  const trackedDirectoryPaths = /* @__PURE__ */ new Set();
+  const trackedMirrorPaths = /* @__PURE__ */ new Set();
+  const work = [];
+  for (const record of options.trackedTargets) {
+    if (record.targetType === "directory") {
+      trackedDirectoryPaths.add(normalizeVaultPath(record.vaultPath));
+      work.push(
+        buildEntry(
+          "tracked-directory",
+          {
+            targetType: "directory",
+            vaultPath: record.vaultPath,
+            repoName: record.repoName,
+            visibility: record.visibility,
+            storedOriginUrl: record.originUrl
+          },
+          options.vaultBasePath,
+          options.resolveRepoState
+        )
+      );
+      continue;
+    }
+    trackedMirrorPaths.add(normalizeVaultPath(record.mirrorPath ?? ""));
+    work.push(
+      buildEntry(
+        "tracked-file",
+        {
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          mirrorPath: record.mirrorPath,
+          repoName: record.repoName,
+          visibility: record.visibility,
+          storedOriginUrl: record.originUrl
+        },
+        options.vaultBasePath,
+        options.resolveRepoState
+      )
+    );
+  }
+  for (const repoPath of options.standaloneRepoPaths) {
+    const normalizedRepoPath = normalizeVaultPath(repoPath);
+    if (trackedDirectoryPaths.has(normalizedRepoPath)) {
+      continue;
+    }
+    work.push(
+      buildEntry(
+        "scanned-directory",
+        {
+          targetType: "directory",
+          vaultPath: normalizedRepoPath
+        },
+        options.vaultBasePath,
+        options.resolveRepoState
+      )
+    );
+  }
+  for (const mirrorPath of options.orphanMirrorPaths) {
+    const normalizedMirrorPath = normalizeVaultPath(mirrorPath);
+    if (trackedMirrorPaths.has(normalizedMirrorPath)) {
+      continue;
+    }
+    work.push(
+      buildEntry(
+        "orphan-mirror",
+        {
+          targetType: "file",
+          vaultPath: normalizedMirrorPath,
+          mirrorPath: normalizedMirrorPath
+        },
+        options.vaultBasePath,
+        options.resolveRepoState
+      )
+    );
+  }
+  const entries = await Promise.all(work);
+  return entries.sort((left, right) => {
+    const kindOrder = SOURCE_KIND_ORDER[left.sourceKind] - SOURCE_KIND_ORDER[right.sourceKind];
+    if (kindOrder !== 0) {
+      return kindOrder;
+    }
+    return left.vaultPath.localeCompare(right.vaultPath);
+  });
+}
+
+// src/settings/vault-publisher-setting-tab.ts
+var import_obsidian4 = require("obsidian");
+
+// src/modals/unpublish-confirm-modal.ts
+var import_obsidian3 = require("obsidian");
+var UnpublishConfirmModal = class extends import_obsidian3.Modal {
+  constructor(app, entry) {
+    super(app);
+    this.didResolve = false;
+    this.entry = entry;
+  }
+  onOpen() {
+    this.titleEl.setText("Unpublish Repository");
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: "This removes the GitHub repository and local Git repo state, but keeps your vault content."
+    });
+    const details = contentEl.createEl("ul", { cls: "vault-publisher-confirm-list" });
+    details.createEl("li", {
+      text: `Target: ${this.getTargetLabel()}`
+    });
+    details.createEl("li", {
+      text: `GitHub repo: ${this.entry.githubRepoSlug ?? "Unknown"}`
+    });
+    details.createEl("li", {
+      text: this.getLocalCleanupLabel()
+    });
+    details.createEl("li", {
+      text: this.getKeptContentLabel()
+    });
+    new import_obsidian3.Setting(contentEl).addButton((button) => {
+      button.setButtonText("Cancel").onClick(() => {
+        this.finish(false);
+      });
+    }).addButton((button) => {
+      button.setButtonText("Unpublish").onClick(() => {
+        this.finish(true);
+      });
+      button.buttonEl.addClass("mod-warning");
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.didResolve) {
+      this.resolveSelection?.(false);
+    }
+  }
+  openAndConfirm() {
+    return new Promise((resolve) => {
+      this.resolveSelection = resolve;
+      this.open();
+    });
+  }
+  finish(value) {
+    this.didResolve = true;
+    this.resolveSelection?.(value);
+    this.close();
+  }
+  getTargetLabel() {
+    if (this.entry.sourceKind === "tracked-file") {
+      return `File ${this.entry.vaultPath}`;
+    }
+    if (this.entry.sourceKind === "orphan-mirror") {
+      return `Mirror ${this.entry.localRepoVaultPath}`;
+    }
+    return `Directory ${this.entry.vaultPath}`;
+  }
+  getLocalCleanupLabel() {
+    if (this.entry.sourceKind === "tracked-directory" || this.entry.sourceKind === "scanned-directory") {
+      return `Local cleanup: remove only ${this.entry.localRepoVaultPath}/.git`;
+    }
+    return `Local cleanup: delete mirror directory ${this.entry.localRepoVaultPath}`;
+  }
+  getKeptContentLabel() {
+    if (this.entry.sourceKind === "tracked-file") {
+      return `Keeps source file ${this.entry.vaultPath}`;
+    }
+    if (this.entry.sourceKind === "orphan-mirror") {
+      return "Keeps the rest of the vault unchanged";
+    }
+    return `Keeps directory contents in ${this.entry.vaultPath}`;
+  }
+};
+
+// src/settings/vault-publisher-setting-tab.ts
+var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.renderNonce = 0;
+    this.vaultPublisher = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.addClass("vault-publisher-settings");
+    this.renderHeader(containerEl);
+    containerEl.createDiv({
+      cls: "vault-publisher-empty",
+      text: "Loading repositories..."
+    });
+    const currentRender = ++this.renderNonce;
+    void this.renderInventory(currentRender);
+  }
+  async renderInventory(renderNonce) {
+    const { containerEl } = this;
+    try {
+      const entries = await this.vaultPublisher.getRepoInventory();
+      if (renderNonce !== this.renderNonce) {
+        return;
+      }
+      containerEl.empty();
+      containerEl.addClass("vault-publisher-settings");
+      this.renderHeader(containerEl, entries.length);
+      if (entries.length === 0) {
+        containerEl.createDiv({
+          cls: "vault-publisher-empty",
+          text: "No tracked or discovered repositories were found."
+        });
+        return;
+      }
+      const groups = [
+        {
+          title: "Tracked Targets",
+          description: "Repositories the plugin explicitly tracks for directories and file mirrors.",
+          emptyText: "No tracked directory or file targets.",
+          entries: entries.filter((entry) => entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file")
+        },
+        {
+          title: "Scanned Repositories",
+          description: "Standalone Git repositories found by the existing vault scan.",
+          emptyText: "No standalone scanned repositories.",
+          entries: entries.filter((entry) => entry.sourceKind === "scanned-directory")
+        },
+        {
+          title: "Orphan Mirrors",
+          description: "Mirror repositories under the plugin mirror root that are no longer tied to a tracked file target.",
+          emptyText: "No orphan mirror repositories.",
+          entries: entries.filter((entry) => entry.sourceKind === "orphan-mirror")
+        }
+      ];
+      for (const group of groups) {
+        this.renderGroup(containerEl, group);
+      }
+    } catch (error) {
+      if (renderNonce !== this.renderNonce) {
+        return;
+      }
+      containerEl.empty();
+      containerEl.addClass("vault-publisher-settings");
+      this.renderHeader(containerEl);
+      containerEl.createDiv({
+        cls: "vault-publisher-empty",
+        text: this.formatError(error)
+      });
+    }
+  }
+  renderHeader(containerEl, totalCount) {
+    const heading = totalCount === void 0 ? "Repository Management" : `Repository Management (${totalCount})`;
+    new import_obsidian4.Setting(containerEl).setName(heading).setDesc(
+      "View tracked targets, scanned repos, and orphan mirrors. Unpublish deletes the GitHub repo and removes local Git state while keeping vault content."
+    ).addButton((button) => {
+      button.setButtonText("Refresh").onClick(() => {
+        this.display();
+      });
+    });
+  }
+  renderGroup(containerEl, group) {
+    const groupEl = containerEl.createDiv({ cls: "vault-publisher-section" });
+    groupEl.createEl("h3", {
+      text: `${group.title} (${group.entries.length})`
+    });
+    groupEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: group.description
+    });
+    if (group.entries.length === 0) {
+      groupEl.createDiv({
+        cls: "vault-publisher-empty",
+        text: group.emptyText
+      });
+      return;
+    }
+    for (const entry of group.entries) {
+      this.renderEntry(groupEl, entry);
+    }
+  }
+  renderEntry(containerEl, entry) {
+    const setting = new import_obsidian4.Setting(containerEl);
+    setting.settingEl.addClass("vault-publisher-entry");
+    setting.nameEl.empty();
+    const titleEl = setting.nameEl.createDiv({ cls: "vault-publisher-entry-title" });
+    titleEl.createSpan({
+      cls: "vault-publisher-entry-path",
+      text: this.getEntryTitle(entry)
+    });
+    for (const badge of this.getEntryBadges(entry)) {
+      titleEl.createSpan({
+        cls: "vault-publisher-entry-badge",
+        text: badge
+      });
+    }
+    setting.descEl.empty();
+    for (const line of this.getEntryLines(entry)) {
+      const lineEl = setting.descEl.createDiv({ cls: "vault-publisher-entry-line" });
+      lineEl.createSpan({
+        cls: "vault-publisher-entry-label",
+        text: `${line.label}: `
+      });
+      lineEl.createSpan({ text: line.value });
+    }
+    if (!entry.canUnpublish && entry.disabledReason) {
+      setting.descEl.createDiv({
+        cls: "vault-publisher-entry-warning",
+        text: entry.disabledReason
+      });
+    }
+    setting.addButton((button) => {
+      button.setButtonText("Unpublish");
+      button.buttonEl.addClass("mod-warning");
+      button.setDisabled(!entry.canUnpublish);
+      button.onClick(() => {
+        void this.handleUnpublish(entry, button);
+      });
+    });
+  }
+  async handleUnpublish(entry, button) {
+    const confirmed = await new UnpublishConfirmModal(this.app, entry).openAndConfirm();
+    if (!confirmed) {
+      return;
+    }
+    button.setButtonText("Working...");
+    button.setDisabled(true);
+    await this.vaultPublisher.unpublishRepo(entry);
+    this.display();
+  }
+  getEntryTitle(entry) {
+    if (entry.sourceKind === "tracked-file") {
+      return entry.vaultPath;
+    }
+    if (entry.sourceKind === "orphan-mirror") {
+      return entry.localRepoVaultPath;
+    }
+    return entry.vaultPath;
+  }
+  getEntryBadges(entry) {
+    const badges = [];
+    if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file") {
+      badges.push("Tracked");
+    } else if (entry.sourceKind === "scanned-directory") {
+      badges.push("Scanned");
+    } else {
+      badges.push("Orphan");
+    }
+    if (entry.sourceKind === "tracked-file" || entry.sourceKind === "orphan-mirror") {
+      badges.push("File");
+    } else {
+      badges.push("Directory");
+    }
+    if (entry.githubRepoSlug) {
+      badges.push("GitHub");
+    } else if (entry.hasOrigin) {
+      badges.push("Non-GitHub");
+    } else {
+      badges.push("No Remote");
+    }
+    return badges;
+  }
+  getEntryLines(entry) {
+    const lines = [];
+    if (entry.sourceKind === "tracked-file") {
+      lines.push({ label: "Source", value: entry.vaultPath });
+      if (entry.mirrorPath) {
+        lines.push({ label: "Mirror", value: entry.mirrorPath });
+      }
+    } else if (entry.sourceKind === "orphan-mirror") {
+      lines.push({ label: "Mirror", value: entry.localRepoVaultPath });
+    } else {
+      lines.push({ label: "Path", value: entry.vaultPath });
+    }
+    lines.push({
+      label: "Local Repo",
+      value: entry.hasLocalGit ? entry.localRepoVaultPath : `${entry.localRepoVaultPath} (missing .git)`
+    });
+    if (entry.githubRepoSlug) {
+      lines.push({
+        label: "GitHub",
+        value: `https://github.com/${entry.githubRepoSlug}`
+      });
+    }
+    if (entry.liveOriginUrl) {
+      lines.push({ label: "Origin", value: entry.liveOriginUrl });
+    } else {
+      lines.push({ label: "Origin", value: "Not configured" });
+    }
+    if (entry.storedOriginUrl && entry.storedOriginUrl !== entry.liveOriginUrl) {
+      lines.push({ label: "Stored Origin", value: entry.storedOriginUrl });
+    }
+    if (entry.visibility) {
+      lines.push({ label: "Visibility", value: entry.visibility });
+    }
+    return lines;
+  }
+  formatError(error) {
+    if (error instanceof Error) {
+      return `Could not load repositories: ${error.message}`;
+    }
+    return "Could not load repositories.";
+  }
+};
+
 // src/plugin.ts
-var MIRROR_ROOT = ".obsidian/plugins/vault-publisher/mirrors";
-var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
+var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     this.isRunning = false;
@@ -1006,6 +1550,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     this.configStore = new ConfigStore(this);
     await this.configStore.load();
     this.gitService = new GitService();
+    this.addSettingTab(new VaultPublisherSettingTab(this.app, this));
     this.addCommand({
       id: "publish-directory",
       name: "Publish Directory to GitHub",
@@ -1037,14 +1582,14 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
   async ensurePrerequisites() {
     const status = await this.gitService.checkPrerequisites();
     if (!status.ok) {
-      new import_obsidian3.Notice(status.message ?? "Missing required tools.", 12e3);
+      new import_obsidian5.Notice(status.message ?? "Missing required tools.", 12e3);
       return false;
     }
     return true;
   }
   async executeExclusive(action) {
     if (this.isRunning) {
-      new import_obsidian3.Notice("Vault Publisher is already running.");
+      new import_obsidian5.Notice("Vault Publisher is already running.");
       return;
     }
     this.isRunning = true;
@@ -1062,6 +1607,68 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       return adapter.basePath;
     }
     return null;
+  }
+  async getRepoInventory() {
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return [];
+    }
+    const [standaloneRepoPaths, orphanMirrorPaths] = await Promise.all([
+      this.gitService.findStandaloneRepos(vaultBasePath),
+      this.gitService.findMirrorRepos(vaultBasePath, MIRROR_ROOT)
+    ]);
+    return buildRepoInventory({
+      vaultBasePath,
+      trackedTargets: this.configStore.getAllTargets(),
+      standaloneRepoPaths,
+      orphanMirrorPaths,
+      resolveRepoState: async (absolutePath) => this.gitService.detectRepoState(absolutePath)
+    });
+  }
+  async unpublishRepo(entry) {
+    let didSucceed = false;
+    await this.executeExclusive(async () => {
+      didSucceed = await this.performUnpublishRepo(entry);
+    });
+    return didSucceed;
+  }
+  async performUnpublishRepo(entry) {
+    if (!entry.canUnpublish || !entry.githubRepoSlug) {
+      new import_obsidian5.Notice(entry.disabledReason ?? "This repository cannot be unpublished.", 1e4);
+      return false;
+    }
+    const githubStatus = await this.gitService.checkGitHubPrerequisites();
+    if (!githubStatus.ok) {
+      new import_obsidian5.Notice(githubStatus.message ?? "Missing required GitHub tools.", 12e3);
+      return false;
+    }
+    let remoteResult;
+    try {
+      remoteResult = await this.gitService.deleteGitHubRepo(entry.githubRepoSlug);
+    } catch (error) {
+      this.showCommandError(error);
+      return false;
+    }
+    try {
+      if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "scanned-directory") {
+        await this.gitService.removeGitDirectory(entry.localRepoPath);
+      } else {
+        await this.gitService.removeDirectory(entry.localRepoPath);
+      }
+      if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file") {
+        this.configStore.removeTarget(entry.targetType, entry.vaultPath);
+        await this.configStore.save();
+      }
+    } catch (error) {
+      const detail = error instanceof GitCommandError ? error.displayMessage() : error instanceof Error ? error.message : "Unknown local cleanup failure.";
+      const remoteMessage2 = remoteResult.status === "deleted" ? `Deleted GitHub repo ${entry.githubRepoSlug}` : `GitHub repo ${entry.githubRepoSlug} was already absent`;
+      new import_obsidian5.Notice(`${remoteMessage2}, but local cleanup failed: ${detail}`, 15e3);
+      return false;
+    }
+    const targetLabel = entry.sourceKind === "tracked-file" ? `file ${entry.vaultPath}` : entry.sourceKind === "orphan-mirror" ? `mirror ${entry.localRepoVaultPath}` : `directory ${entry.vaultPath}`;
+    const remoteMessage = remoteResult.status === "deleted" ? `Deleted GitHub repo ${entry.githubRepoSlug}` : `GitHub repo ${entry.githubRepoSlug} was already absent`;
+    new import_obsidian5.Notice(`Unpublished ${targetLabel}. ${remoteMessage}.`, 1e4);
+    return true;
   }
   isSelectableDirectory(vaultPath) {
     const normalized = normalizeVaultPath(vaultPath);
@@ -1119,14 +1726,14 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       if (!normalizedPath) {
         continue;
       }
-      if (item instanceof import_obsidian3.TFolder) {
+      if (item instanceof import_obsidian5.TFolder) {
         if (!this.isSelectableDirectory(normalizedPath)) {
           continue;
         }
         targets.push({ path: normalizedPath, kind: "directory" });
         continue;
       }
-      if (item instanceof import_obsidian3.TFile) {
+      if (item instanceof import_obsidian5.TFile) {
         if (!this.isSelectableFile(normalizedPath)) {
           continue;
         }
@@ -1151,7 +1758,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
   resolveTargetSelection(item) {
     const normalizedPath = normalizeVaultPath(item.path);
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (item.kind === "file" || abstractItem instanceof import_obsidian3.TFile) {
+    if (item.kind === "file" || abstractItem instanceof import_obsidian5.TFile) {
       return {
         targetType: "file",
         vaultPath: normalizedPath
@@ -1180,13 +1787,13 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       return null;
     }
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (abstractItem instanceof import_obsidian3.TFolder && this.isSelectableDirectory(normalizedPath)) {
+    if (abstractItem instanceof import_obsidian5.TFolder && this.isSelectableDirectory(normalizedPath)) {
       return {
         targetType: "directory",
         vaultPath: normalizedPath
       };
     }
-    if (abstractItem instanceof import_obsidian3.TFile && this.isSelectableFile(normalizedPath)) {
+    if (abstractItem instanceof import_obsidian5.TFile && this.isSelectableFile(normalizedPath)) {
       return {
         targetType: "file",
         vaultPath: normalizedPath
@@ -1326,7 +1933,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
   async chooseTarget() {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
-      new import_obsidian3.Notice("No publishable files or subdirectories were found in this vault.");
+      new import_obsidian5.Notice("No publishable files or subdirectories were found in this vault.");
       return null;
     }
     const defaultTarget = this.getActiveDefaultTarget();
@@ -1343,7 +1950,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
         if (resolvedFromQuery) {
           return resolvedFromQuery;
         }
-        new import_obsidian3.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
+        new import_obsidian5.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
       }
       return null;
     }
@@ -1370,6 +1977,59 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     return `https://github.com/${repoName}`;
   }
+  async openExternalUrl(url) {
+    if (typeof require === "function") {
+      try {
+        const electron = require("electron");
+        if (electron.shell?.openExternal) {
+          await electron.shell.openExternal(url);
+          return;
+        }
+      } catch {
+      }
+    }
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+  showPublishedRepoNotice(messagePrefix, repoUrl, suffix = "", autoOpen = false) {
+    let notice = null;
+    const fragment = document.createDocumentFragment();
+    fragment.append(`${messagePrefix} `);
+    const linkEl = document.createElement("a");
+    linkEl.href = repoUrl;
+    linkEl.textContent = repoUrl;
+    linkEl.target = "_blank";
+    linkEl.rel = "noopener noreferrer";
+    linkEl.className = "vault-publisher-notice-link";
+    fragment.append(linkEl);
+    if (suffix) {
+      fragment.append(suffix.startsWith(" ") ? suffix : ` ${suffix}`);
+    }
+    notice = new import_obsidian5.Notice(fragment, 1e4);
+    notice.noticeEl.addClass("vault-publisher-clickable-notice");
+    notice.noticeEl.setAttribute("aria-label", `Open ${repoUrl}`);
+    notice.noticeEl.title = "Open repository in browser";
+    const openRepo = (event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      void this.openExternalUrl(repoUrl);
+      notice?.hide();
+    };
+    linkEl.addEventListener("click", (event) => {
+      openRepo(event);
+    });
+    notice.noticeEl.addEventListener("click", (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (event.target instanceof HTMLElement && event.target.closest("a")) {
+        return;
+      }
+      openRepo(event);
+    });
+    if (autoOpen) {
+      void this.openExternalUrl(repoUrl);
+    }
+  }
   async handlePublishCommand(options) {
     if (!await this.ensurePrerequisites()) {
       return;
@@ -1385,12 +2045,12 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       return;
     }
     if (target.targetType === "directory" && isVaultRoot(target.vaultPath)) {
-      new import_obsidian3.Notice("Vault root cannot be published. Select a subdirectory.");
+      new import_obsidian5.Notice("Vault root cannot be published. Select a subdirectory.");
       return;
     }
     const vaultBasePath = this.getVaultBasePath();
     if (!vaultBasePath) {
-      new import_obsidian3.Notice("Could not resolve the vault base path.");
+      new import_obsidian5.Notice("Could not resolve the vault base path.");
       return;
     }
     if (target.targetType === "directory") {
@@ -1402,7 +2062,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
   async publishDirectoryTarget(vaultPath, vaultBasePath) {
     const targetPath = absolutePathForVaultPath(vaultBasePath, vaultPath);
     if (!ensureInsideVault(vaultBasePath, targetPath)) {
-      new import_obsidian3.Notice("Selected path is outside the vault. Aborting.");
+      new import_obsidian5.Notice("Selected path is outside the vault. Aborting.");
       return;
     }
     const existingRecord = this.configStore.findTarget("directory", vaultPath);
@@ -1414,12 +2074,12 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? folderName);
     const repoState = await this.gitService.detectRepoState(targetPath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new import_obsidian3.Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 1e4);
+      new import_obsidian5.Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 1e4);
       return;
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      new import_obsidian3.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
+      new import_obsidian5.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
         await this.gitService.initRepo(targetPath);
@@ -1436,18 +2096,19 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
         repoName: linked.repoName,
         remote: "origin",
         visibility,
-        lastPushed: nowIso
+        lastPushed: nowIso,
+        originUrl: linked.originUrl ?? existingRecord?.originUrl
       });
       await this.configStore.save();
       const repoUrl2 = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      new import_obsidian3.Notice(`Published ${vaultPath} -> ${repoUrl2}${suffix}`, 8e3);
+      this.showPublishedRepoNotice(`Published ${vaultPath} ->`, repoUrl2, suffix, true);
       return;
     }
-    new import_obsidian3.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
+    new import_obsidian5.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
     const pushResult = await this.gitService.pushDirectory(targetPath, folderName);
     if (pushResult.status === "failed") {
-      new import_obsidian3.Notice(pushResult.error ?? "Push failed.", 12e3);
+      new import_obsidian5.Notice(pushResult.error ?? "Push failed.", 12e3);
       return;
     }
     const repoName = existingRecord?.repoName || (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) || baseRepoName;
@@ -1458,20 +2119,21 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       repoName,
       remote: "origin",
       visibility,
-      lastPushed: nextLastPushed
+      lastPushed: nextLastPushed,
+      originUrl: repoState.originUrl ?? existingRecord?.originUrl
     });
     await this.configStore.save();
     if (pushResult.status === "up_to_date") {
-      new import_obsidian3.Notice("Already up to date.");
+      new import_obsidian5.Notice("Already up to date.");
       return;
     }
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new import_obsidian3.Notice(`Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`, 8e3);
+    new import_obsidian5.Notice(`Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`, 8e3);
   }
   async publishFileTarget(vaultPath, vaultBasePath) {
     const sourceFile = this.app.vault.getAbstractFileByPath(vaultPath);
-    if (!(sourceFile instanceof import_obsidian3.TFile)) {
-      new import_obsidian3.Notice(`File not found: ${vaultPath}`);
+    if (!(sourceFile instanceof import_obsidian5.TFile)) {
+      new import_obsidian5.Notice(`File not found: ${vaultPath}`);
       return;
     }
     const existingRecord = this.configStore.findTarget("file", vaultPath);
@@ -1484,7 +2146,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     const mirrorFileName = existingRecord?.mirrorFileName ?? import_node_path3.default.posix.basename(vaultPath);
     const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, mirrorPath);
     if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
-      new import_obsidian3.Notice("File publish path resolved outside vault. Aborting.");
+      new import_obsidian5.Notice("File publish path resolved outside vault. Aborting.");
       return;
     }
     const fileStem = fileStemFromVaultPath(vaultPath);
@@ -1492,7 +2154,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, mirrorFileName);
     let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new import_obsidian3.Notice("This file target uses a non-GitHub origin. v1 supports GitHub remotes only.", 12e3);
+      new import_obsidian5.Notice("This file target uses a non-GitHub origin. v1 supports GitHub remotes only.", 12e3);
       return;
     }
     if (!repoState.hasLocalGit) {
@@ -1501,7 +2163,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasOrigin) {
-      new import_obsidian3.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
+      new import_obsidian5.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         mirrorAbsolutePath,
         fileStem,
@@ -1515,19 +2177,20 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
         remote: "origin",
         visibility,
         lastPushed: nowIso,
+        originUrl: linked.originUrl ?? existingRecord?.originUrl,
         mirrorPath,
         mirrorFileName
       });
       await this.configStore.save();
       const repoUrl2 = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      new import_obsidian3.Notice(`Published file ${vaultPath} -> ${repoUrl2}${suffix}`, 9e3);
+      this.showPublishedRepoNotice(`Published file ${vaultPath} ->`, repoUrl2, suffix, true);
       return;
     }
-    new import_obsidian3.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
+    new import_obsidian5.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
     const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
     if (pushResult.status === "failed") {
-      new import_obsidian3.Notice(pushResult.error ?? "File push failed.", 12e3);
+      new import_obsidian5.Notice(pushResult.error ?? "File push failed.", 12e3);
       return;
     }
     const repoName = existingRecord?.repoName || (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) || baseRepoName;
@@ -1539,16 +2202,17 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
       remote: "origin",
       visibility,
       lastPushed: nextLastPushed,
+      originUrl: repoState.originUrl ?? existingRecord?.originUrl,
       mirrorPath,
       mirrorFileName
     });
     await this.configStore.save();
     if (pushResult.status === "up_to_date") {
-      new import_obsidian3.Notice(`File repo already up to date: ${vaultPath}`, 6e3);
+      new import_obsidian5.Notice(`File repo already up to date: ${vaultPath}`, 6e3);
       return;
     }
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new import_obsidian3.Notice(`Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`, 9e3);
+    new import_obsidian5.Notice(`Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`, 9e3);
   }
   summarizeResults(results) {
     return {
@@ -1566,7 +2230,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     let changed = false;
     for (const record of records) {
       const sourceItem = this.app.vault.getAbstractFileByPath(record.vaultPath);
-      if (!(sourceItem instanceof import_obsidian3.TFile)) {
+      if (!(sourceItem instanceof import_obsidian5.TFile)) {
         results.push({
           targetType: "file",
           vaultPath: record.vaultPath,
@@ -1631,6 +2295,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
           this.configStore.upsertTarget({
             ...record,
             repoName: linked.repoName,
+            originUrl: linked.originUrl ?? record.originUrl,
             lastPushed: status === "pushed" ? nowIso : record.lastPushed
           });
           changed = true;
@@ -1647,6 +2312,7 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
         this.configStore.upsertTarget({
           ...record,
           repoName,
+          originUrl: repoState.originUrl ?? record.originUrl,
           lastPushed: pushResult.status === "pushed" ? nowIso : record.lastPushed
         });
         changed = true;
@@ -1668,10 +2334,10 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     const vaultBasePath = this.getVaultBasePath();
     if (!vaultBasePath) {
-      new import_obsidian3.Notice("Could not resolve the vault base path.");
+      new import_obsidian5.Notice("Could not resolve the vault base path.");
       return;
     }
-    new import_obsidian3.Notice("Pushing all repositories...", 5e3);
+    new import_obsidian5.Notice("Pushing all repositories...", 5e3);
     const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",
       resolveBaseRepoName: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath)
@@ -1695,7 +2361,8 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
         repoName,
         remote: "origin",
         visibility,
-        lastPushed
+        lastPushed,
+        originUrl: result.originUrl ?? existing?.originUrl
       });
       shouldSave = true;
     }
@@ -1708,29 +2375,29 @@ var VaultPublisherPlugin = class extends import_obsidian3.Plugin {
     }
     const summary = this.summarizeResults([...directorySummary.results, ...filePush.results]);
     if (summary.total === 0) {
-      new import_obsidian3.Notice("No standalone or managed file repositories found to push.");
+      new import_obsidian5.Notice("No standalone or managed file repositories found to push.");
       return;
     }
-    new import_obsidian3.Notice(
+    new import_obsidian5.Notice(
       `Push All complete: ${summary.pushed} pushed, ${summary.upToDate} up to date, ${summary.failed} failed, ${summary.skipped} skipped.`,
       1e4
     );
     const failures = summary.results.filter((result) => result.status === "failed");
     if (failures.length > 0) {
       const details = failures.slice(0, 3).map((failure) => `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`).join(" | ");
-      new import_obsidian3.Notice(`Push failures: ${details}`, 12e3);
+      new import_obsidian5.Notice(`Push failures: ${details}`, 12e3);
     }
   }
   showCommandError(error) {
     if (error instanceof GitCommandError) {
-      new import_obsidian3.Notice(`${error.command} failed: ${error.displayMessage()}`, 15e3);
+      new import_obsidian5.Notice(`${error.command} failed: ${error.displayMessage()}`, 15e3);
       return;
     }
     if (error instanceof Error) {
-      new import_obsidian3.Notice(error.message, 12e3);
+      new import_obsidian5.Notice(error.message, 12e3);
       return;
     }
-    new import_obsidian3.Notice("An unknown error occurred.", 12e3);
+    new import_obsidian5.Notice("An unknown error occurred.", 12e3);
   }
 };
 

@@ -4,15 +4,19 @@ import path from "node:path";
 
 import { App, Notice, Plugin, TFile, TFolder } from "obsidian";
 
+import { MIRROR_ROOT } from "./constants";
 import { DirectoryPickerModal, PublishTargetItem } from "./modals/directory-picker-modal";
 import { VisibilityModal } from "./modals/visibility-modal";
 import { ConfigStore } from "./services/config-store";
 import { GitCommandError, GitService } from "./services/git-service";
+import { buildRepoInventory } from "./services/repo-inventory";
+import { VaultPublisherSettingTab } from "./settings/vault-publisher-setting-tab";
 import {
   PublishedTargetRecord,
   PublishTargetType,
   PushAllSummary,
   PushRepoResult,
+  RepoInventoryEntry,
   RepoVisibility,
 } from "./types";
 import { isGitHubOrigin, originToWebUrl } from "./utils/github-url";
@@ -35,7 +39,11 @@ type ResolvedPublishTarget = {
   vaultPath: string;
 };
 
-const MIRROR_ROOT = ".obsidian/plugins/vault-publisher/mirrors";
+type ElectronModuleLike = {
+  shell?: {
+    openExternal?: (url: string) => Promise<void> | void;
+  };
+};
 
 export default class VaultPublisherPlugin extends Plugin {
   private configStore!: ConfigStore;
@@ -49,6 +57,7 @@ export default class VaultPublisherPlugin extends Plugin {
     await this.configStore.load();
 
     this.gitService = new GitService();
+    this.addSettingTab(new VaultPublisherSettingTab(this.app, this));
 
     this.addCommand({
       id: "publish-directory",
@@ -114,6 +123,94 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     return null;
+  }
+
+  async getRepoInventory(): Promise<RepoInventoryEntry[]> {
+    const vaultBasePath = this.getVaultBasePath();
+    if (!vaultBasePath) {
+      return [];
+    }
+
+    const [standaloneRepoPaths, orphanMirrorPaths] = await Promise.all([
+      this.gitService.findStandaloneRepos(vaultBasePath),
+      this.gitService.findMirrorRepos(vaultBasePath, MIRROR_ROOT),
+    ]);
+
+    return buildRepoInventory({
+      vaultBasePath,
+      trackedTargets: this.configStore.getAllTargets(),
+      standaloneRepoPaths,
+      orphanMirrorPaths,
+      resolveRepoState: async (absolutePath) => this.gitService.detectRepoState(absolutePath),
+    });
+  }
+
+  async unpublishRepo(entry: RepoInventoryEntry): Promise<boolean> {
+    let didSucceed = false;
+    await this.executeExclusive(async () => {
+      didSucceed = await this.performUnpublishRepo(entry);
+    });
+    return didSucceed;
+  }
+
+  private async performUnpublishRepo(entry: RepoInventoryEntry): Promise<boolean> {
+    if (!entry.canUnpublish || !entry.githubRepoSlug) {
+      new Notice(entry.disabledReason ?? "This repository cannot be unpublished.", 10000);
+      return false;
+    }
+
+    const githubStatus = await this.gitService.checkGitHubPrerequisites();
+    if (!githubStatus.ok) {
+      new Notice(githubStatus.message ?? "Missing required GitHub tools.", 12000);
+      return false;
+    }
+
+    let remoteResult: { status: "deleted" | "not_found" };
+    try {
+      remoteResult = await this.gitService.deleteGitHubRepo(entry.githubRepoSlug);
+    } catch (error: unknown) {
+      this.showCommandError(error);
+      return false;
+    }
+
+    try {
+      if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "scanned-directory") {
+        await this.gitService.removeGitDirectory(entry.localRepoPath);
+      } else {
+        await this.gitService.removeDirectory(entry.localRepoPath);
+      }
+
+      if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file") {
+        this.configStore.removeTarget(entry.targetType, entry.vaultPath);
+        await this.configStore.save();
+      }
+    } catch (error: unknown) {
+      const detail =
+        error instanceof GitCommandError
+          ? error.displayMessage()
+          : error instanceof Error
+            ? error.message
+            : "Unknown local cleanup failure.";
+      const remoteMessage =
+        remoteResult.status === "deleted"
+          ? `Deleted GitHub repo ${entry.githubRepoSlug}`
+          : `GitHub repo ${entry.githubRepoSlug} was already absent`;
+      new Notice(`${remoteMessage}, but local cleanup failed: ${detail}`, 15000);
+      return false;
+    }
+
+    const targetLabel =
+      entry.sourceKind === "tracked-file"
+        ? `file ${entry.vaultPath}`
+        : entry.sourceKind === "orphan-mirror"
+          ? `mirror ${entry.localRepoVaultPath}`
+          : `directory ${entry.vaultPath}`;
+    const remoteMessage =
+      remoteResult.status === "deleted"
+        ? `Deleted GitHub repo ${entry.githubRepoSlug}`
+        : `GitHub repo ${entry.githubRepoSlug} was already absent`;
+    new Notice(`Unpublished ${targetLabel}. ${remoteMessage}.`, 10000);
+    return true;
   }
 
   private isSelectableDirectory(vaultPath: string): boolean {
@@ -495,6 +592,72 @@ export default class VaultPublisherPlugin extends Plugin {
     return `https://github.com/${repoName}`;
   }
 
+  private async openExternalUrl(url: string): Promise<void> {
+    if (typeof require === "function") {
+      try {
+        const electron = require("electron") as ElectronModuleLike;
+        if (electron.shell?.openExternal) {
+          await electron.shell.openExternal(url);
+          return;
+        }
+      } catch {
+        // Fall through to the browser fallback below.
+      }
+    }
+
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  private showPublishedRepoNotice(messagePrefix: string, repoUrl: string, suffix = "", autoOpen = false): void {
+    let notice: Notice | null = null;
+    const fragment = document.createDocumentFragment();
+    fragment.append(`${messagePrefix} `);
+
+    const linkEl = document.createElement("a");
+    linkEl.href = repoUrl;
+    linkEl.textContent = repoUrl;
+    linkEl.target = "_blank";
+    linkEl.rel = "noopener noreferrer";
+    linkEl.className = "vault-publisher-notice-link";
+    fragment.append(linkEl);
+
+    if (suffix) {
+      fragment.append(suffix.startsWith(" ") ? suffix : ` ${suffix}`);
+    }
+
+    notice = new Notice(fragment, 10000);
+    notice.noticeEl.addClass("vault-publisher-clickable-notice");
+    notice.noticeEl.setAttribute("aria-label", `Open ${repoUrl}`);
+    notice.noticeEl.title = "Open repository in browser";
+
+    const openRepo = (event?: Event): void => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      void this.openExternalUrl(repoUrl);
+      notice?.hide();
+    };
+
+    linkEl.addEventListener("click", (event) => {
+      openRepo(event);
+    });
+
+    notice.noticeEl.addEventListener("click", (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      if (event.target instanceof HTMLElement && event.target.closest("a")) {
+        return;
+      }
+
+      openRepo(event);
+    });
+
+    if (autoOpen) {
+      void this.openExternalUrl(repoUrl);
+    }
+  }
+
   private async handlePublishCommand(options?: { forcePicker?: boolean }): Promise<void> {
     if (!(await this.ensurePrerequisites())) {
       return;
@@ -576,12 +739,13 @@ export default class VaultPublisherPlugin extends Plugin {
         remote: "origin",
         visibility,
         lastPushed: nowIso,
+        originUrl: linked.originUrl ?? existingRecord?.originUrl,
       });
       await this.configStore.save();
 
       const repoUrl = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      new Notice(`Published ${vaultPath} -> ${repoUrl}${suffix}`, 8000);
+      this.showPublishedRepoNotice(`Published ${vaultPath} ->`, repoUrl, suffix, true);
       return;
     }
 
@@ -605,6 +769,7 @@ export default class VaultPublisherPlugin extends Plugin {
       remote: "origin",
       visibility,
       lastPushed: nextLastPushed,
+      originUrl: repoState.originUrl ?? existingRecord?.originUrl,
     });
     await this.configStore.save();
 
@@ -673,6 +838,7 @@ export default class VaultPublisherPlugin extends Plugin {
         remote: "origin",
         visibility,
         lastPushed: nowIso,
+        originUrl: linked.originUrl ?? existingRecord?.originUrl,
         mirrorPath,
         mirrorFileName,
       });
@@ -680,7 +846,7 @@ export default class VaultPublisherPlugin extends Plugin {
 
       const repoUrl = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      new Notice(`Published file ${vaultPath} -> ${repoUrl}${suffix}`, 9000);
+      this.showPublishedRepoNotice(`Published file ${vaultPath} ->`, repoUrl, suffix, true);
       return;
     }
 
@@ -704,6 +870,7 @@ export default class VaultPublisherPlugin extends Plugin {
       remote: "origin",
       visibility,
       lastPushed: nextLastPushed,
+      originUrl: repoState.originUrl ?? existingRecord?.originUrl,
       mirrorPath,
       mirrorFileName,
     });
@@ -810,6 +977,7 @@ export default class VaultPublisherPlugin extends Plugin {
           this.configStore.upsertTarget({
             ...record,
             repoName: linked.repoName,
+            originUrl: linked.originUrl ?? record.originUrl,
             lastPushed: status === "pushed" ? nowIso : record.lastPushed,
           });
           changed = true;
@@ -831,6 +999,7 @@ export default class VaultPublisherPlugin extends Plugin {
         this.configStore.upsertTarget({
           ...record,
           repoName,
+          originUrl: repoState.originUrl ?? record.originUrl,
           lastPushed: pushResult.status === "pushed" ? nowIso : record.lastPushed,
         });
         changed = true;
@@ -897,6 +1066,7 @@ export default class VaultPublisherPlugin extends Plugin {
         remote: "origin",
         visibility,
         lastPushed,
+        originUrl: result.originUrl ?? existing?.originUrl,
       });
       shouldSave = true;
     }

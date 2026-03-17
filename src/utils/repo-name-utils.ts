@@ -1,3 +1,5 @@
+import { parseGitHubRepoSlug } from "./github-url";
+
 export function sanitizeRepoName(input: string): string {
   const sanitized = input
     .trim()
@@ -26,22 +28,11 @@ export function repoNameCandidates(baseName: string, maxAttempts = 50): string[]
 }
 
 export function parseRepoNameFromOrigin(originUrl: string): string | null {
-  const trimmed = originUrl.trim();
-
-  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return sshMatch[2];
+  const slug = parseGitHubRepoSlug(originUrl);
+  if (!slug) {
+    return null;
   }
 
-  const httpsMatch = trimmed.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (httpsMatch) {
-    return httpsMatch[2];
-  }
-
-  const sshProtocolMatch = trimmed.match(/^ssh:\/\/git@github\.com\/([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshProtocolMatch) {
-    return sshProtocolMatch[2];
-  }
-
-  return null;
+  const segments = slug.split("/");
+  return segments[1] ?? null;
 }

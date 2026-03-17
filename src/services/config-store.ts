@@ -50,6 +50,10 @@ function isValidTargetRecord(value: unknown): value is PublishedTargetRecord {
     return false;
   }
 
+  if (candidate.originUrl !== undefined && typeof candidate.originUrl !== "string") {
+    return false;
+  }
+
   if (candidate.targetType === "file") {
     return (
       typeof candidate.mirrorPath === "string" &&
@@ -68,6 +72,7 @@ function normalizeTargetRecord(record: PublishedTargetRecord): PublishedTargetRe
     targetType: record.targetType,
     vaultPath: normalizeVaultPath(record.vaultPath),
     remote: "origin",
+    originUrl: typeof record.originUrl === "string" && record.originUrl.length > 0 ? record.originUrl : undefined,
     mirrorPath: record.targetType === "file" ? normalizeVaultPath(record.mirrorPath ?? "") : undefined,
     mirrorFileName: record.targetType === "file" ? record.mirrorFileName : undefined,
   };
@@ -151,5 +156,14 @@ export class ConfigStore {
     }
 
     this.data.publishedTargets.push(normalized);
+  }
+
+  removeTarget(targetType: PublishTargetType, vaultPath: string): boolean {
+    const normalized = normalizeVaultPath(vaultPath);
+    const initialLength = this.data.publishedTargets.length;
+    this.data.publishedTargets = this.data.publishedTargets.filter(
+      (record) => !(record.targetType === targetType && record.vaultPath === normalized),
+    );
+    return this.data.publishedTargets.length !== initialLength;
   }
 }

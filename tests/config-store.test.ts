@@ -40,6 +40,7 @@ describe("ConfigStore", () => {
             remote: "origin",
             visibility: "private",
             lastPushed: "2026-03-08T00:00:00Z",
+            originUrl: "https://github.com/user/idea.git",
             mirrorPath: ".obsidian/plugins/vault-publisher/mirrors/idea-abc12345",
             mirrorFileName: "idea.md",
           },
@@ -53,6 +54,7 @@ describe("ConfigStore", () => {
 
     const fileRecord = store.findTarget("file", "notes/idea.md");
     expect(fileRecord?.mirrorFileName).toBe("idea.md");
+    expect(fileRecord?.originUrl).toBe("https://github.com/user/idea.git");
 
     store.upsertTarget({
       targetType: "directory",
@@ -65,5 +67,41 @@ describe("ConfigStore", () => {
 
     expect(store.getTargetsByType("file")).toHaveLength(1);
     expect(store.getTargetsByType("directory")).toHaveLength(1);
+  });
+
+  it("removes tracked targets by type and normalized path", async () => {
+    const plugin = {
+      loadData: vi.fn(async () => ({
+        publishedTargets: [
+          {
+            targetType: "directory",
+            vaultPath: "notes/blog",
+            repoName: "blog",
+            remote: "origin",
+            visibility: "public",
+            lastPushed: "2026-03-08T00:00:00Z",
+          },
+          {
+            targetType: "file",
+            vaultPath: "notes/idea.md",
+            repoName: "idea",
+            remote: "origin",
+            visibility: "private",
+            lastPushed: "2026-03-08T00:00:00Z",
+            mirrorPath: ".obsidian/plugins/vault-publisher/mirrors/idea-abc12345",
+            mirrorFileName: "idea.md",
+          },
+        ],
+      })),
+      saveData: vi.fn(async () => undefined),
+    } as any;
+
+    const store = new ConfigStore(plugin);
+    await store.load();
+
+    expect(store.removeTarget("directory", "/notes/blog/")).toBe(true);
+    expect(store.findTarget("directory", "notes/blog")).toBeUndefined();
+    expect(store.findTarget("file", "notes/idea.md")).toBeDefined();
+    expect(store.removeTarget("directory", "notes/blog")).toBe(false);
   });
 });

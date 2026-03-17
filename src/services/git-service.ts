@@ -191,6 +191,17 @@ function isRemoteAttachFailure(error: GitCommandError): boolean {
   return output.includes("unable to add remote \"origin\"");
 }
 
+function isGitHubRepoNotFoundError(error: GitCommandError): boolean {
+  const output = `${error.stderr}\n${error.stdout}`.toLowerCase();
+  return (
+    output.includes("could not resolve to a repository") ||
+    output.includes("repository not found") ||
+    output.includes("was not found") ||
+    output.includes("http 404") ||
+    output.includes("not found")
+  );
+}
+
 export class GitService {
   private readonly runner: ExecRunner;
 
@@ -208,7 +219,7 @@ export class GitService {
     }
   }
 
-  async checkPrerequisites(): Promise<PrerequisiteStatus> {
+  private async checkGitPrerequisites(): Promise<PrerequisiteStatus> {
     try {
       await this.run("git", ["--version"]);
     } catch (error: unknown) {
@@ -226,6 +237,12 @@ export class GitService {
       };
     }
 
+    return {
+      ok: true,
+    };
+  }
+
+  async checkGitHubPrerequisites(): Promise<PrerequisiteStatus> {
     try {
       await this.run("gh", ["--version"]);
       await this.run("gh", ["auth", "status"]);
@@ -244,6 +261,22 @@ export class GitService {
         message:
           "GitHub CLI (gh) not found or not authenticated. Run `gh auth login` in your terminal.",
       };
+    }
+
+    return {
+      ok: true,
+    };
+  }
+
+  async checkPrerequisites(): Promise<PrerequisiteStatus> {
+    const gitStatus = await this.checkGitPrerequisites();
+    if (!gitStatus.ok) {
+      return gitStatus;
+    }
+
+    const githubStatus = await this.checkGitHubPrerequisites();
+    if (!githubStatus.ok) {
+      return githubStatus;
     }
 
     return {
@@ -479,6 +512,74 @@ export class GitService {
     }
   }
 
+  async deleteGitHubRepo(repoSlug: string): Promise<{ status: "deleted" | "not_found" }> {
+    try {
+      await this.run("gh", ["repo", "delete", repoSlug, "--yes"]);
+      return { status: "deleted" };
+    } catch (error: unknown) {
+      const commandError = errorFromUnknown(error, "gh", ["repo", "delete", repoSlug, "--yes"]);
+      if (isGitHubRepoNotFoundError(commandError)) {
+        return { status: "not_found" };
+      }
+
+      throw commandError;
+    }
+  }
+
+  async removeGitDirectory(targetDir: string): Promise<void> {
+    await fsp.rm(path.join(targetDir, ".git"), { recursive: true, force: true });
+  }
+
+  async removeDirectory(targetDir: string): Promise<void> {
+    await fsp.rm(targetDir, { recursive: true, force: true });
+  }
+
+  private async findStandaloneReposUnderRoot(
+    rootPath: string,
+    rootRelativePath: string,
+    options?: { skipDirectoryNames?: Set<string> },
+  ): Promise<string[]> {
+    const repositories = new Set<string>();
+    const skipDirectoryNames = options?.skipDirectoryNames ?? new Set<string>();
+
+    const walk = async (currentPath: string, relativePath: string): Promise<void> => {
+      let entries: fs.Dirent[];
+
+      try {
+        entries = await fsp.readdir(currentPath, { withFileTypes: true });
+      } catch {
+        return;
+      }
+
+      const hasLocalGitDir = entries.some((entry) => entry.isDirectory() && entry.name === ".git");
+      if (relativePath && hasLocalGitDir) {
+        const vaultRelativePath = rootRelativePath ? `${rootRelativePath}/${relativePath}` : relativePath;
+        repositories.add(vaultRelativePath);
+      }
+
+      for (const entry of entries) {
+        if (!entry.isDirectory()) {
+          continue;
+        }
+
+        if (entry.isSymbolicLink()) {
+          continue;
+        }
+
+        if (entry.name === ".git" || skipDirectoryNames.has(entry.name)) {
+          continue;
+        }
+
+        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        const childAbsolutePath = path.join(currentPath, entry.name);
+        await walk(childAbsolutePath, childRelativePath);
+      }
+    };
+
+    await walk(rootPath, "");
+    return [...repositories].sort((left, right) => left.localeCompare(right));
+  }
+
   async linkLocalRepoWithoutOrigin(
     targetDir: string,
     folderName: string,
@@ -563,43 +664,24 @@ export class GitService {
   }
 
   async findStandaloneRepos(vaultBasePath: string): Promise<string[]> {
-    const repositories = new Set<string>();
+    return this.findStandaloneReposUnderRoot(vaultBasePath, "", {
+      skipDirectoryNames: new Set([".obsidian", "node_modules"]),
+    });
+  }
 
-    const walk = async (currentPath: string, relativePath: string): Promise<void> => {
-      let entries: fs.Dirent[];
+  async findMirrorRepos(vaultBasePath: string, mirrorRootRelativePath: string): Promise<string[]> {
+    const mirrorRootPath = path.join(vaultBasePath, mirrorRootRelativePath);
 
-      try {
-        entries = await fsp.readdir(currentPath, { withFileTypes: true });
-      } catch {
-        return;
+    try {
+      const mirrorStats = await fsp.stat(mirrorRootPath);
+      if (!mirrorStats.isDirectory()) {
+        return [];
       }
+    } catch {
+      return [];
+    }
 
-      const hasLocalGitDir = entries.some((entry) => entry.isDirectory() && entry.name === ".git");
-      if (relativePath && hasLocalGitDir) {
-        repositories.add(relativePath);
-      }
-
-      for (const entry of entries) {
-        if (!entry.isDirectory()) {
-          continue;
-        }
-
-        if (entry.isSymbolicLink()) {
-          continue;
-        }
-
-        if (entry.name === ".git" || entry.name === ".obsidian" || entry.name === "node_modules") {
-          continue;
-        }
-
-        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
-        const childAbsolutePath = path.join(currentPath, entry.name);
-        await walk(childAbsolutePath, childRelativePath);
-      }
-    };
-
-    await walk(vaultBasePath, "");
-    return [...repositories].sort((left, right) => left.localeCompare(right));
+    return this.findStandaloneReposUnderRoot(mirrorRootPath, mirrorRootRelativePath);
   }
 
   async pushAllRepos(vaultBasePath: string, options?: PushAllOptions): Promise<PushAllSummary> {
