@@ -13,8 +13,42 @@ export interface PublishedTargetRecord {
   mirrorFileName?: string;
 }
 
+export interface StaticSiteTokenMap {
+  title: string;
+  slug: string;
+  description: string;
+  dateIso: string;
+  dateDisplay: string;
+}
+
+export interface StaticSiteHostConfig {
+  id: string;
+  name: string;
+  repoRoot: string;
+  siteSubdir: string;
+  postPathTemplate: string;
+  templateRelPath: string;
+  contentMarker: string;
+  tokens: StaticSiteTokenMap;
+  commitMessagePublish: string;
+  commitMessageUnpublish: string;
+  remote: string;
+  branch?: string;
+  publicBaseUrl?: string;
+}
+
+export interface StaticSitePublishRecord {
+  hostId: string;
+  vaultPath: string;
+  slug: string;
+  lastPublished: string;
+  lastCommitSha?: string;
+}
+
 export interface VaultPublisherData {
   publishedTargets: PublishedTargetRecord[];
+  staticSiteHosts?: StaticSiteHostConfig[];
+  staticSitePublishes?: StaticSitePublishRecord[];
 }
 
 export interface RepoState {

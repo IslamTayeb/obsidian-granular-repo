@@ -85,3 +85,38 @@
   cursor: pointer;
   text-decoration: underline;
 }
+
+.vault-publisher-static-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.vault-publisher-static-header h3 {
+  margin: 0;
+}
+
+.vault-publisher-experimental-badge {
+  background: var(--text-error);
+  color: var(--text-on-accent);
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 3px 8px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.vault-publisher-experimental-warning {
+  color: var(--text-error);
+  background: var(--background-modifier-error);
+  border: 1px solid var(--text-error);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 8px 0 12px;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}

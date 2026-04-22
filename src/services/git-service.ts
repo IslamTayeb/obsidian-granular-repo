@@ -60,7 +60,9 @@ export class GitCommandError extends Error {
     systemCode?: string;
     message?: string;
   }) {
-    super(params.message ?? `${params.command} ${params.args.join(" ")} failed`);
+    super(
+      params.message ?? `${params.command} ${params.args.join(" ")} failed`,
+    );
     this.name = "GitCommandError";
     this.command = params.command;
     this.args = [...params.args];
@@ -106,8 +108,10 @@ function errorFromUnknown(
     code?: number | string;
   };
 
-  const numericCode = typeof candidate.code === "number" ? candidate.code : null;
-  const systemCode = typeof candidate.code === "string" ? candidate.code : undefined;
+  const numericCode =
+    typeof candidate.code === "number" ? candidate.code : null;
+  const systemCode =
+    typeof candidate.code === "string" ? candidate.code : undefined;
 
   return new GitCommandError({
     command,
@@ -128,9 +132,18 @@ function buildAugmentedPath(): string {
   const candidates =
     process.platform === "win32"
       ? []
-      : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+      : [
+          "/opt/homebrew/bin",
+          "/usr/local/bin",
+          "/usr/bin",
+          "/bin",
+          "/usr/sbin",
+          "/sbin",
+        ];
 
-  const existingSegments = basePath.split(delimiter).filter((segment) => segment.length > 0);
+  const existingSegments = basePath
+    .split(delimiter)
+    .filter((segment) => segment.length > 0);
   const merged = [...existingSegments];
 
   for (const candidate of candidates) {
@@ -172,7 +185,9 @@ function isRepoNameTakenError(error: GitCommandError): boolean {
 
 function isNoUpstreamPushError(error: GitCommandError): boolean {
   const output = `${error.stderr}\n${error.stdout}`.toLowerCase();
-  return output.includes("no upstream branch") || output.includes("set-upstream");
+  return (
+    output.includes("no upstream branch") || output.includes("set-upstream")
+  );
 }
 
 function isNoCommitsError(error: GitCommandError): boolean {
@@ -188,7 +203,7 @@ function isNoCommitsError(error: GitCommandError): boolean {
 
 function isRemoteAttachFailure(error: GitCommandError): boolean {
   const output = `${error.stderr}\n${error.stdout}`.toLowerCase();
-  return output.includes("unable to add remote \"origin\"");
+  return output.includes('unable to add remote "origin"');
 }
 
 function isGitHubRepoNotFoundError(error: GitCommandError): boolean {
@@ -211,7 +226,11 @@ export class GitService {
     this.runner = runner;
   }
 
-  private async run(command: string, args: string[], cwd?: string): Promise<RunnerResult> {
+  private async run(
+    command: string,
+    args: string[],
+    cwd?: string,
+  ): Promise<RunnerResult> {
     try {
       return await this.runner(command, args, { cwd });
     } catch (error: unknown) {
@@ -304,7 +323,11 @@ export class GitService {
     }
 
     try {
-      const result = await this.run("git", ["remote", "get-url", "origin"], targetDir);
+      const result = await this.run(
+        "git",
+        ["remote", "get-url", "origin"],
+        targetDir,
+      );
       const originUrl = result.stdout.trim();
 
       if (!originUrl) {
@@ -348,7 +371,11 @@ export class GitService {
     await fsp.mkdir(targetDir, { recursive: true });
   }
 
-  async syncSingleFileToRepo(sourceFilePath: string, targetDir: string, repoFileName: string): Promise<void> {
+  async syncSingleFileToRepo(
+    sourceFilePath: string,
+    targetDir: string,
+    repoFileName: string,
+  ): Promise<void> {
     await this.ensureDirectory(targetDir);
 
     const entries = await fsp.readdir(targetDir, { withFileTypes: true });
@@ -357,7 +384,10 @@ export class GitService {
         continue;
       }
 
-      await fsp.rm(path.join(targetDir, entry.name), { recursive: true, force: true });
+      await fsp.rm(path.join(targetDir, entry.name), {
+        recursive: true,
+        force: true,
+      });
     }
 
     const destinationPath = path.join(targetDir, repoFileName);
@@ -396,12 +426,20 @@ export class GitService {
         await this.createGitHubRepo(targetDir, candidate, visibility, options);
         return candidate;
       } catch (error: unknown) {
-        const commandError = errorFromUnknown(error, "gh", ["repo", "create"], targetDir);
+        const commandError = errorFromUnknown(
+          error,
+          "gh",
+          ["repo", "create"],
+          targetDir,
+        );
         if (isRepoNameTakenError(commandError)) {
           continue;
         }
         if (isRemoteAttachFailure(commandError)) {
-          const recovered = await this.recoverAfterRemoteAttachFailure(targetDir, candidate);
+          const recovered = await this.recoverAfterRemoteAttachFailure(
+            targetDir,
+            candidate,
+          );
           if (recovered) {
             return candidate;
           }
@@ -421,7 +459,11 @@ export class GitService {
   }
 
   async getStagedFiles(targetDir: string): Promise<string[]> {
-    const result = await this.run("git", ["diff", "--cached", "--name-only"], targetDir);
+    const result = await this.run(
+      "git",
+      ["diff", "--cached", "--name-only"],
+      targetDir,
+    );
     return result.stdout
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -443,7 +485,11 @@ export class GitService {
 
   async getAheadCommitCount(targetDir: string): Promise<number | null> {
     try {
-      const result = await this.run("git", ["rev-list", "--count", "@{u}..HEAD"], targetDir);
+      const result = await this.run(
+        "git",
+        ["rev-list", "--count", "@{u}..HEAD"],
+        targetDir,
+      );
       const count = Number.parseInt(result.stdout.trim(), 10);
       return Number.isNaN(count) ? 0 : count;
     } catch {
@@ -466,6 +512,120 @@ export class GitService {
     }
   }
 
+  async isGitWorktree(targetDir: string): Promise<boolean> {
+    try {
+      const result = await this.run(
+        "git",
+        ["rev-parse", "--is-inside-work-tree"],
+        targetDir,
+      );
+      return result.stdout.trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  async getCurrentBranch(targetDir: string): Promise<string | null> {
+    try {
+      const result = await this.run(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        targetDir,
+      );
+      const branch = result.stdout.trim();
+      if (!branch || branch === "HEAD") {
+        return null;
+      }
+      return branch;
+    } catch {
+      return null;
+    }
+  }
+
+  async getHeadSha(targetDir: string): Promise<string | null> {
+    try {
+      const result = await this.run("git", ["rev-parse", "HEAD"], targetDir);
+      const sha = result.stdout.trim();
+      return sha.length > 0 ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async stagePathsInRepo(
+    repoRoot: string,
+    relativePaths: string[],
+  ): Promise<void> {
+    if (relativePaths.length === 0) {
+      return;
+    }
+
+    // `git add -- <pathspec>` also stages deletions; `--all` ensures new/deleted files.
+    const uniquePaths = Array.from(new Set(relativePaths));
+    await this.run("git", ["add", "--all", "--", ...uniquePaths], repoRoot);
+  }
+
+  async getStagedFilesFiltered(
+    repoRoot: string,
+    relativePaths: string[],
+  ): Promise<string[]> {
+    const uniquePaths = Array.from(new Set(relativePaths));
+    if (uniquePaths.length === 0) {
+      return [];
+    }
+
+    const result = await this.run(
+      "git",
+      ["diff", "--cached", "--name-only", "--", ...uniquePaths],
+      repoRoot,
+    );
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+  }
+
+  async commitInRepo(repoRoot: string, message: string): Promise<void> {
+    await this.run("git", ["commit", "-m", message], repoRoot);
+  }
+
+  async pushCurrentBranchInRepo(
+    repoRoot: string,
+    remote: string,
+    branch?: string,
+  ): Promise<{ usedUpstreamFallback: boolean }> {
+    const effectiveBranch = branch ?? (await this.getCurrentBranch(repoRoot));
+    if (!effectiveBranch) {
+      throw new GitCommandError({
+        command: "git",
+        args: ["push"],
+        cwd: repoRoot,
+        message: "Could not resolve current branch for push. Is HEAD detached?",
+      });
+    }
+
+    try {
+      await this.run(
+        "git",
+        ["push", remote, `HEAD:${effectiveBranch}`],
+        repoRoot,
+      );
+      return { usedUpstreamFallback: false };
+    } catch (error: unknown) {
+      const commandError = errorFromUnknown(error, "git", ["push"], repoRoot);
+      if (isNoUpstreamPushError(commandError)) {
+        await this.run(
+          "git",
+          ["push", "-u", remote, `HEAD:${effectiveBranch}`],
+          repoRoot,
+        );
+        return { usedUpstreamFallback: true };
+      }
+
+      throw commandError;
+    }
+  }
+
   private async getAuthenticatedUserLogin(): Promise<string> {
     if (this.ghLogin) {
       return this.ghLogin;
@@ -481,7 +641,10 @@ export class GitService {
     return login;
   }
 
-  private async recoverAfterRemoteAttachFailure(targetDir: string, repoName: string): Promise<boolean> {
+  private async recoverAfterRemoteAttachFailure(
+    targetDir: string,
+    repoName: string,
+  ): Promise<boolean> {
     try {
       const owner = await this.getAuthenticatedUserLogin();
       const repoUrl = `https://github.com/${owner}/${repoName}.git`;
@@ -504,7 +667,11 @@ export class GitService {
 
   async getOriginUrl(targetDir: string): Promise<string | null> {
     try {
-      const result = await this.run("git", ["remote", "get-url", "origin"], targetDir);
+      const result = await this.run(
+        "git",
+        ["remote", "get-url", "origin"],
+        targetDir,
+      );
       const originUrl = result.stdout.trim();
       return originUrl.length > 0 ? originUrl : null;
     } catch {
@@ -512,12 +679,19 @@ export class GitService {
     }
   }
 
-  async deleteGitHubRepo(repoSlug: string): Promise<{ status: "deleted" | "not_found" }> {
+  async deleteGitHubRepo(
+    repoSlug: string,
+  ): Promise<{ status: "deleted" | "not_found" }> {
     try {
       await this.run("gh", ["repo", "delete", repoSlug, "--yes"]);
       return { status: "deleted" };
     } catch (error: unknown) {
-      const commandError = errorFromUnknown(error, "gh", ["repo", "delete", repoSlug, "--yes"]);
+      const commandError = errorFromUnknown(error, "gh", [
+        "repo",
+        "delete",
+        repoSlug,
+        "--yes",
+      ]);
       if (isGitHubRepoNotFoundError(commandError)) {
         return { status: "not_found" };
       }
@@ -527,7 +701,10 @@ export class GitService {
   }
 
   async removeGitDirectory(targetDir: string): Promise<void> {
-    await fsp.rm(path.join(targetDir, ".git"), { recursive: true, force: true });
+    await fsp.rm(path.join(targetDir, ".git"), {
+      recursive: true,
+      force: true,
+    });
   }
 
   async removeDirectory(targetDir: string): Promise<void> {
@@ -542,7 +719,10 @@ export class GitService {
     const repositories = new Set<string>();
     const skipDirectoryNames = options?.skipDirectoryNames ?? new Set<string>();
 
-    const walk = async (currentPath: string, relativePath: string): Promise<void> => {
+    const walk = async (
+      currentPath: string,
+      relativePath: string,
+    ): Promise<void> => {
       let entries: fs.Dirent[];
 
       try {
@@ -551,9 +731,13 @@ export class GitService {
         return;
       }
 
-      const hasLocalGitDir = entries.some((entry) => entry.isDirectory() && entry.name === ".git");
+      const hasLocalGitDir = entries.some(
+        (entry) => entry.isDirectory() && entry.name === ".git",
+      );
       if (relativePath && hasLocalGitDir) {
-        const vaultRelativePath = rootRelativePath ? `${rootRelativePath}/${relativePath}` : relativePath;
+        const vaultRelativePath = rootRelativePath
+          ? `${rootRelativePath}/${relativePath}`
+          : relativePath;
         repositories.add(vaultRelativePath);
       }
 
@@ -570,7 +754,9 @@ export class GitService {
           continue;
         }
 
-        const childRelativePath = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+        const childRelativePath = relativePath
+          ? `${relativePath}/${entry.name}`
+          : entry.name;
         const childAbsolutePath = path.join(currentPath, entry.name);
         await walk(childAbsolutePath, childRelativePath);
       }
@@ -593,22 +779,39 @@ export class GitService {
     }
 
     try {
-      const repoName = await this.createRepoWithAutoName(targetDir, baseRepoName, visibility, 50, {
-        push: true,
-      });
+      const repoName = await this.createRepoWithAutoName(
+        targetDir,
+        baseRepoName,
+        visibility,
+        50,
+        {
+          push: true,
+        },
+      );
       const originUrl = await this.getOriginUrl(targetDir);
       return { repoName, originUrl, pushed: true };
     } catch (error: unknown) {
-      const commandError = errorFromUnknown(error, "gh", ["repo", "create"], targetDir);
+      const commandError = errorFromUnknown(
+        error,
+        "gh",
+        ["repo", "create"],
+        targetDir,
+      );
       if (!isNoCommitsError(commandError)) {
         throw commandError;
       }
     }
 
-    const repoName = await this.createRepoWithAutoName(targetDir, baseRepoName, visibility, 50, {
-      push: false,
-      remoteName: "origin",
-    });
+    const repoName = await this.createRepoWithAutoName(
+      targetDir,
+      baseRepoName,
+      visibility,
+      50,
+      {
+        push: false,
+        remoteName: "origin",
+      },
+    );
     const originUrl = await this.getOriginUrl(targetDir);
 
     if (await this.hasAnyCommit(targetDir)) {
@@ -634,7 +837,10 @@ export class GitService {
       const { usedUpstreamFallback } = await this.push(targetDir);
 
       const changedCount = stagedFiles.length;
-      const didPushChanges = changedCount > 0 || (aheadCount !== null && aheadCount > 0) || usedUpstreamFallback;
+      const didPushChanges =
+        changedCount > 0 ||
+        (aheadCount !== null && aheadCount > 0) ||
+        usedUpstreamFallback;
       if (!didPushChanges) {
         return {
           status: "up_to_date",
@@ -647,7 +853,12 @@ export class GitService {
         changedCount,
       };
     } catch (error: unknown) {
-      const commandError = errorFromUnknown(error, "git", ["commit"], targetDir);
+      const commandError = errorFromUnknown(
+        error,
+        "git",
+        ["commit"],
+        targetDir,
+      );
       const output = commandError.displayMessage().toLowerCase();
       if (output.includes("nothing to commit")) {
         return {
@@ -669,7 +880,10 @@ export class GitService {
     });
   }
 
-  async findMirrorRepos(vaultBasePath: string, mirrorRootRelativePath: string): Promise<string[]> {
+  async findMirrorRepos(
+    vaultBasePath: string,
+    mirrorRootRelativePath: string,
+  ): Promise<string[]> {
     const mirrorRootPath = path.join(vaultBasePath, mirrorRootRelativePath);
 
     try {
@@ -681,10 +895,16 @@ export class GitService {
       return [];
     }
 
-    return this.findStandaloneReposUnderRoot(mirrorRootPath, mirrorRootRelativePath);
+    return this.findStandaloneReposUnderRoot(
+      mirrorRootPath,
+      mirrorRootRelativePath,
+    );
   }
 
-  async pushAllRepos(vaultBasePath: string, options?: PushAllOptions): Promise<PushAllSummary> {
+  async pushAllRepos(
+    vaultBasePath: string,
+    options?: PushAllOptions,
+  ): Promise<PushAllSummary> {
     const repoPaths = await this.findStandaloneRepos(vaultBasePath);
     const results: PushRepoResult[] = [];
 
@@ -695,9 +915,12 @@ export class GitService {
 
       if (!repoState.hasOrigin) {
         try {
-          const visibility = options?.resolveVisibility?.(vaultPath) ?? "private";
+          const visibility =
+            options?.resolveVisibility?.(vaultPath) ?? "private";
           const configuredBaseName = options?.resolveBaseRepoName?.(vaultPath);
-          const baseRepoName = sanitizeRepoName(configuredBaseName ?? folderName);
+          const baseRepoName = sanitizeRepoName(
+            configuredBaseName ?? folderName,
+          );
 
           const linked = await this.linkLocalRepoWithoutOrigin(
             absolutePath,
@@ -713,7 +936,12 @@ export class GitService {
             originUrl: linked.originUrl ?? undefined,
           });
         } catch (error: unknown) {
-          const commandError = errorFromUnknown(error, "gh", ["repo", "create"], absolutePath);
+          const commandError = errorFromUnknown(
+            error,
+            "gh",
+            ["repo", "create"],
+            absolutePath,
+          );
           results.push({
             targetType: "directory",
             vaultPath,
@@ -725,13 +953,19 @@ export class GitService {
       }
 
       const result = await this.pushDirectory(absolutePath, folderName);
-      results.push({ ...result, targetType: "directory", vaultPath, originUrl: repoState.originUrl });
+      results.push({
+        ...result,
+        targetType: "directory",
+        vaultPath,
+        originUrl: repoState.originUrl,
+      });
     }
 
     const summary: PushAllSummary = {
       total: results.length,
       pushed: results.filter((result) => result.status === "pushed").length,
-      upToDate: results.filter((result) => result.status === "up_to_date").length,
+      upToDate: results.filter((result) => result.status === "up_to_date")
+        .length,
       skipped: results.filter((result) => result.status === "skipped").length,
       failed: results.filter((result) => result.status === "failed").length,
       results,

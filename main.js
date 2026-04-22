@@ -5,6 +5,7 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -26,6 +27,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
 // main.ts
 var main_exports = {};
@@ -36,9 +38,9 @@ module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
 var import_node_crypto = __toESM(require("node:crypto"), 1);
-var import_promises2 = __toESM(require("node:fs/promises"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-var import_obsidian5 = require("obsidian");
+var import_promises3 = __toESM(require("node:fs/promises"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
+var import_obsidian8 = require("obsidian");
 
 // src/constants.ts
 var MIRROR_ROOT = ".obsidian/plugins/vault-publisher/mirrors";
@@ -246,9 +248,102 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
   }
 };
 
-// src/modals/visibility-modal.ts
+// src/modals/static-site-host-picker-modal.ts
 var import_obsidian2 = require("obsidian");
-var VisibilityModal = class extends import_obsidian2.Modal {
+var StaticSiteHostPickerModal = class extends import_obsidian2.FuzzySuggestModal {
+  constructor(app, hosts) {
+    super(app);
+    this.didChoose = false;
+    this.hosts = [...hosts];
+    this.setPlaceholder("Select a static site host");
+    this.setInstructions([
+      { command: "Type", purpose: "Search hosts" },
+      { command: "Enter", purpose: "Select host" },
+      { command: "Esc", purpose: "Cancel" }
+    ]);
+  }
+  getItems() {
+    return this.hosts;
+  }
+  getItemText(item) {
+    return `${item.name} (${item.id})`;
+  }
+  onChooseItem(item) {
+    this.didChoose = true;
+    this.resolveSelection?.(item);
+  }
+  onClose() {
+    super.onClose();
+    if (!this.didChoose) {
+      this.resolveSelection?.(null);
+    }
+  }
+  openAndGetValue() {
+    return new Promise((resolve) => {
+      this.resolveSelection = resolve;
+      this.open();
+    });
+  }
+};
+
+// src/modals/static-site-unpublish-confirm-modal.ts
+var import_obsidian3 = require("obsidian");
+var StaticSiteUnpublishConfirmModal = class extends import_obsidian3.Modal {
+  constructor(app, host, record) {
+    super(app);
+    this.didResolve = false;
+    this.host = host;
+    this.record = record;
+  }
+  onOpen() {
+    this.titleEl.setText(`Unpublish from ${this.host.name}`);
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: "This deletes the post directory from the static site and pushes the removal to GitHub."
+    });
+    const details = contentEl.createEl("ul", {
+      cls: "vault-publisher-confirm-list"
+    });
+    details.createEl("li", { text: `Host: ${this.host.name}` });
+    details.createEl("li", { text: `Source note: ${this.record.vaultPath}` });
+    details.createEl("li", { text: `Slug: ${this.record.slug}` });
+    details.createEl("li", {
+      text: `Will delete: ${this.host.siteSubdir.replace(/^\/+|\/+$/g, "")}/${this.record.slug}/`
+    });
+    new import_obsidian3.Setting(contentEl).addButton((button) => {
+      button.setButtonText("Cancel").onClick(() => {
+        this.finish(false);
+      });
+    }).addButton((button) => {
+      button.setButtonText("Unpublish").onClick(() => {
+        this.finish(true);
+      });
+      button.buttonEl.addClass("mod-warning");
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.didResolve) {
+      this.resolveSelection?.(false);
+    }
+  }
+  openAndConfirm() {
+    return new Promise((resolve) => {
+      this.resolveSelection = resolve;
+      this.open();
+    });
+  }
+  finish(value) {
+    this.didResolve = true;
+    this.resolveSelection?.(value);
+    this.close();
+  }
+};
+
+// src/modals/visibility-modal.ts
+var import_obsidian4 = require("obsidian");
+var VisibilityModal = class extends import_obsidian4.Modal {
   constructor(app) {
     super(app);
     this.selected = null;
@@ -261,19 +356,19 @@ var VisibilityModal = class extends import_obsidian2.Modal {
     contentEl.createEl("p", {
       text: "Choose visibility for this repository."
     });
-    const visibilitySetting = new import_obsidian2.Setting(contentEl).setName("Visibility").setDesc("Required: pick one option");
+    const visibilitySetting = new import_obsidian4.Setting(contentEl).setName("Visibility").setDesc("Required: pick one option");
     const buttonContainer = visibilitySetting.controlEl.createDiv({
       cls: "vault-publisher-visibility-buttons"
     });
-    this.publicButton = new import_obsidian2.ButtonComponent(buttonContainer).setButtonText("Public").onClick(() => {
+    this.publicButton = new import_obsidian4.ButtonComponent(buttonContainer).setButtonText("Public").onClick(() => {
       this.selected = "public";
       this.refreshSelectionState();
     });
-    this.privateButton = new import_obsidian2.ButtonComponent(buttonContainer).setButtonText("Private").onClick(() => {
+    this.privateButton = new import_obsidian4.ButtonComponent(buttonContainer).setButtonText("Private").onClick(() => {
       this.selected = "private";
       this.refreshSelectionState();
     });
-    new import_obsidian2.Setting(contentEl).addButton((button) => {
+    new import_obsidian4.Setting(contentEl).addButton((button) => {
       button.setButtonText("Cancel").onClick(() => {
         this.finish(null);
       });
@@ -345,9 +440,6 @@ function absolutePathForVaultPath(vaultBasePath, vaultPath) {
 }
 
 // src/services/config-store.ts
-var DEFAULT_DATA = {
-  publishedTargets: []
-};
 function isLegacyRecord(value) {
   if (!value || typeof value !== "object") {
     return false;
@@ -395,15 +487,47 @@ function legacyToTargetRecord(record) {
     lastPushed: record.lastPushed
   };
 }
+function isStringField(value) {
+  return typeof value === "string" && value.length > 0;
+}
+function isValidStaticSiteHost(value) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value;
+  if (!isStringField(candidate.id) || !isStringField(candidate.name) || !isStringField(candidate.repoRoot) || !isStringField(candidate.siteSubdir) || !isStringField(candidate.postPathTemplate) || !isStringField(candidate.templateRelPath) || !isStringField(candidate.contentMarker) || !isStringField(candidate.commitMessagePublish) || !isStringField(candidate.commitMessageUnpublish) || !isStringField(candidate.remote)) {
+    return false;
+  }
+  const tokens = candidate.tokens;
+  if (!tokens || typeof tokens !== "object") {
+    return false;
+  }
+  return isStringField(tokens.title) && isStringField(tokens.slug) && isStringField(tokens.description) && isStringField(tokens.dateIso) && isStringField(tokens.dateDisplay);
+}
+function isValidPublishRecord(value) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value;
+  return isStringField(candidate.hostId) && isStringField(candidate.vaultPath) && isStringField(candidate.slug) && isStringField(candidate.lastPublished);
+}
 var ConfigStore = class {
   constructor(plugin) {
-    this.data = { ...DEFAULT_DATA };
+    this.data = {
+      publishedTargets: [],
+      staticSiteHosts: [],
+      staticSitePublishes: []
+    };
     this.plugin = plugin;
   }
   async load() {
     const loaded = await this.plugin.loadData();
     if (!loaded || typeof loaded !== "object") {
-      this.data = { ...DEFAULT_DATA };
+      this.data = {
+        publishedTargets: [],
+        staticSiteHosts: [],
+        staticSitePublishes: []
+      };
       return;
     }
     const candidate = loaded;
@@ -415,8 +539,15 @@ var ConfigStore = class {
       records = candidate.publishedDirs.filter(isLegacyRecord).map((record) => legacyToTargetRecord(record));
       migrated = true;
     }
+    const staticSiteHosts = Array.isArray(candidate.staticSiteHosts) ? candidate.staticSiteHosts.filter(isValidStaticSiteHost) : [];
+    const staticSitePublishes = Array.isArray(candidate.staticSitePublishes) ? candidate.staticSitePublishes.filter(isValidPublishRecord).map((record) => ({
+      ...record,
+      vaultPath: normalizeVaultPath(record.vaultPath)
+    })) : [];
     this.data = {
-      publishedTargets: records
+      publishedTargets: records,
+      staticSiteHosts,
+      staticSitePublishes
     };
     if (migrated) {
       await this.save();
@@ -429,7 +560,9 @@ var ConfigStore = class {
     return [...this.data.publishedTargets];
   }
   getTargetsByType(targetType) {
-    return this.data.publishedTargets.filter((record) => record.targetType === targetType);
+    return this.data.publishedTargets.filter(
+      (record) => record.targetType === targetType
+    );
   }
   findTarget(targetType, vaultPath) {
     const normalized = normalizeVaultPath(vaultPath);
@@ -455,6 +588,67 @@ var ConfigStore = class {
       (record) => !(record.targetType === targetType && record.vaultPath === normalized)
     );
     return this.data.publishedTargets.length !== initialLength;
+  }
+  getStaticSiteHosts() {
+    return [...this.data.staticSiteHosts ?? []];
+  }
+  findStaticSiteHost(hostId) {
+    return (this.data.staticSiteHosts ?? []).find((host) => host.id === hostId);
+  }
+  upsertStaticSiteHost(host) {
+    const hosts = this.data.staticSiteHosts ?? [];
+    const existingIndex = hosts.findIndex((entry) => entry.id === host.id);
+    if (existingIndex >= 0) {
+      hosts[existingIndex] = host;
+    } else {
+      hosts.push(host);
+    }
+    this.data.staticSiteHosts = hosts;
+  }
+  removeStaticSiteHost(hostId) {
+    const hosts = this.data.staticSiteHosts ?? [];
+    const initialLength = hosts.length;
+    this.data.staticSiteHosts = hosts.filter((entry) => entry.id !== hostId);
+    return (this.data.staticSiteHosts?.length ?? 0) !== initialLength;
+  }
+  getStaticSitePublishes() {
+    return [...this.data.staticSitePublishes ?? []];
+  }
+  getStaticSitePublishesByHost(hostId) {
+    return (this.data.staticSitePublishes ?? []).filter(
+      (record) => record.hostId === hostId
+    );
+  }
+  findStaticSitePublish(hostId, vaultPath) {
+    const normalized = normalizeVaultPath(vaultPath);
+    return (this.data.staticSitePublishes ?? []).find(
+      (record) => record.hostId === hostId && record.vaultPath === normalized
+    );
+  }
+  upsertStaticSitePublish(record) {
+    const normalized = {
+      ...record,
+      vaultPath: normalizeVaultPath(record.vaultPath)
+    };
+    const publishes = this.data.staticSitePublishes ?? [];
+    const existingIndex = publishes.findIndex(
+      (entry) => entry.hostId === normalized.hostId && entry.vaultPath === normalized.vaultPath
+    );
+    if (existingIndex >= 0) {
+      publishes[existingIndex] = normalized;
+    } else {
+      publishes.push(normalized);
+    }
+    this.data.staticSitePublishes = publishes;
+  }
+  removeStaticSitePublish(hostId, vaultPath) {
+    const normalized = normalizeVaultPath(vaultPath);
+    const publishes = this.data.staticSitePublishes ?? [];
+    const initialLength = publishes.length;
+    this.data.staticSitePublishes = publishes.filter(
+      (entry) => !(entry.hostId === hostId && entry.vaultPath === normalized)
+    );
+    return (this.data.staticSitePublishes?.length ?? 0) !== initialLength;
   }
 };
 
@@ -564,7 +758,9 @@ var GITIGNORE_DEFAULTS = ".obsidian/\n.trash/\n.DS_Store\nThumbs.db\n";
 var COMMAND_TIMEOUT_MS = 12e4;
 var GitCommandError = class extends Error {
   constructor(params) {
-    super(params.message ?? `${params.command} ${params.args.join(" ")} failed`);
+    super(
+      params.message ?? `${params.command} ${params.args.join(" ")} failed`
+    );
     this.name = "GitCommandError";
     this.command = params.command;
     this.args = [...params.args];
@@ -609,7 +805,14 @@ function errorFromUnknown(error, command, args, cwd) {
 function buildAugmentedPath() {
   const delimiter = import_node_path2.default.delimiter;
   const basePath = import_node_process.default.env.PATH ?? "";
-  const candidates = import_node_process.default.platform === "win32" ? [] : ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  const candidates = import_node_process.default.platform === "win32" ? [] : [
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin"
+  ];
   const existingSegments = basePath.split(delimiter).filter((segment) => segment.length > 0);
   const merged = [...existingSegments];
   for (const candidate of candidates) {
@@ -743,7 +946,11 @@ var GitService = class {
       };
     }
     try {
-      const result = await this.run("git", ["remote", "get-url", "origin"], targetDir);
+      const result = await this.run(
+        "git",
+        ["remote", "get-url", "origin"],
+        targetDir
+      );
       const originUrl = result.stdout.trim();
       if (!originUrl) {
         return {
@@ -786,7 +993,10 @@ var GitService = class {
       if (entry.name === ".git" || entry.name === repoFileName) {
         continue;
       }
-      await import_promises.default.rm(import_node_path2.default.join(targetDir, entry.name), { recursive: true, force: true });
+      await import_promises.default.rm(import_node_path2.default.join(targetDir, entry.name), {
+        recursive: true,
+        force: true
+      });
     }
     const destinationPath = import_node_path2.default.join(targetDir, repoFileName);
     await import_promises.default.copyFile(sourceFilePath, destinationPath);
@@ -809,12 +1019,20 @@ var GitService = class {
         await this.createGitHubRepo(targetDir, candidate, visibility, options);
         return candidate;
       } catch (error) {
-        const commandError = errorFromUnknown(error, "gh", ["repo", "create"], targetDir);
+        const commandError = errorFromUnknown(
+          error,
+          "gh",
+          ["repo", "create"],
+          targetDir
+        );
         if (isRepoNameTakenError(commandError)) {
           continue;
         }
         if (isRemoteAttachFailure(commandError)) {
-          const recovered = await this.recoverAfterRemoteAttachFailure(targetDir, candidate);
+          const recovered = await this.recoverAfterRemoteAttachFailure(
+            targetDir,
+            candidate
+          );
           if (recovered) {
             return candidate;
           }
@@ -830,7 +1048,11 @@ var GitService = class {
     await this.run("git", ["add", "."], targetDir);
   }
   async getStagedFiles(targetDir) {
-    const result = await this.run("git", ["diff", "--cached", "--name-only"], targetDir);
+    const result = await this.run(
+      "git",
+      ["diff", "--cached", "--name-only"],
+      targetDir
+    );
     return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   }
   async commit(targetDir, message) {
@@ -846,7 +1068,11 @@ var GitService = class {
   }
   async getAheadCommitCount(targetDir) {
     try {
-      const result = await this.run("git", ["rev-list", "--count", "@{u}..HEAD"], targetDir);
+      const result = await this.run(
+        "git",
+        ["rev-list", "--count", "@{u}..HEAD"],
+        targetDir
+      );
       const count = Number.parseInt(result.stdout.trim(), 10);
       return Number.isNaN(count) ? 0 : count;
     } catch {
@@ -861,6 +1087,95 @@ var GitService = class {
       const commandError = errorFromUnknown(error, "git", ["push"], targetDir);
       if (isNoUpstreamPushError(commandError)) {
         await this.run("git", ["push", "-u", "origin", "HEAD"], targetDir);
+        return { usedUpstreamFallback: true };
+      }
+      throw commandError;
+    }
+  }
+  async isGitWorktree(targetDir) {
+    try {
+      const result = await this.run(
+        "git",
+        ["rev-parse", "--is-inside-work-tree"],
+        targetDir
+      );
+      return result.stdout.trim() === "true";
+    } catch {
+      return false;
+    }
+  }
+  async getCurrentBranch(targetDir) {
+    try {
+      const result = await this.run(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        targetDir
+      );
+      const branch = result.stdout.trim();
+      if (!branch || branch === "HEAD") {
+        return null;
+      }
+      return branch;
+    } catch {
+      return null;
+    }
+  }
+  async getHeadSha(targetDir) {
+    try {
+      const result = await this.run("git", ["rev-parse", "HEAD"], targetDir);
+      const sha = result.stdout.trim();
+      return sha.length > 0 ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+  async stagePathsInRepo(repoRoot, relativePaths) {
+    if (relativePaths.length === 0) {
+      return;
+    }
+    const uniquePaths = Array.from(new Set(relativePaths));
+    await this.run("git", ["add", "--all", "--", ...uniquePaths], repoRoot);
+  }
+  async getStagedFilesFiltered(repoRoot, relativePaths) {
+    const uniquePaths = Array.from(new Set(relativePaths));
+    if (uniquePaths.length === 0) {
+      return [];
+    }
+    const result = await this.run(
+      "git",
+      ["diff", "--cached", "--name-only", "--", ...uniquePaths],
+      repoRoot
+    );
+    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  }
+  async commitInRepo(repoRoot, message) {
+    await this.run("git", ["commit", "-m", message], repoRoot);
+  }
+  async pushCurrentBranchInRepo(repoRoot, remote, branch) {
+    const effectiveBranch = branch ?? await this.getCurrentBranch(repoRoot);
+    if (!effectiveBranch) {
+      throw new GitCommandError({
+        command: "git",
+        args: ["push"],
+        cwd: repoRoot,
+        message: "Could not resolve current branch for push. Is HEAD detached?"
+      });
+    }
+    try {
+      await this.run(
+        "git",
+        ["push", remote, `HEAD:${effectiveBranch}`],
+        repoRoot
+      );
+      return { usedUpstreamFallback: false };
+    } catch (error) {
+      const commandError = errorFromUnknown(error, "git", ["push"], repoRoot);
+      if (isNoUpstreamPushError(commandError)) {
+        await this.run(
+          "git",
+          ["push", "-u", remote, `HEAD:${effectiveBranch}`],
+          repoRoot
+        );
         return { usedUpstreamFallback: true };
       }
       throw commandError;
@@ -897,7 +1212,11 @@ var GitService = class {
   }
   async getOriginUrl(targetDir) {
     try {
-      const result = await this.run("git", ["remote", "get-url", "origin"], targetDir);
+      const result = await this.run(
+        "git",
+        ["remote", "get-url", "origin"],
+        targetDir
+      );
       const originUrl = result.stdout.trim();
       return originUrl.length > 0 ? originUrl : null;
     } catch {
@@ -909,7 +1228,12 @@ var GitService = class {
       await this.run("gh", ["repo", "delete", repoSlug, "--yes"]);
       return { status: "deleted" };
     } catch (error) {
-      const commandError = errorFromUnknown(error, "gh", ["repo", "delete", repoSlug, "--yes"]);
+      const commandError = errorFromUnknown(error, "gh", [
+        "repo",
+        "delete",
+        repoSlug,
+        "--yes"
+      ]);
       if (isGitHubRepoNotFoundError(commandError)) {
         return { status: "not_found" };
       }
@@ -917,7 +1241,10 @@ var GitService = class {
     }
   }
   async removeGitDirectory(targetDir) {
-    await import_promises.default.rm(import_node_path2.default.join(targetDir, ".git"), { recursive: true, force: true });
+    await import_promises.default.rm(import_node_path2.default.join(targetDir, ".git"), {
+      recursive: true,
+      force: true
+    });
   }
   async removeDirectory(targetDir) {
     await import_promises.default.rm(targetDir, { recursive: true, force: true });
@@ -932,7 +1259,9 @@ var GitService = class {
       } catch {
         return;
       }
-      const hasLocalGitDir = entries.some((entry) => entry.isDirectory() && entry.name === ".git");
+      const hasLocalGitDir = entries.some(
+        (entry) => entry.isDirectory() && entry.name === ".git"
+      );
       if (relativePath && hasLocalGitDir) {
         const vaultRelativePath = rootRelativePath ? `${rootRelativePath}/${relativePath}` : relativePath;
         repositories.add(vaultRelativePath);
@@ -962,21 +1291,38 @@ var GitService = class {
       await this.commit(targetDir, buildCommitMessage(folderName));
     }
     try {
-      const repoName2 = await this.createRepoWithAutoName(targetDir, baseRepoName, visibility, 50, {
-        push: true
-      });
+      const repoName2 = await this.createRepoWithAutoName(
+        targetDir,
+        baseRepoName,
+        visibility,
+        50,
+        {
+          push: true
+        }
+      );
       const originUrl2 = await this.getOriginUrl(targetDir);
       return { repoName: repoName2, originUrl: originUrl2, pushed: true };
     } catch (error) {
-      const commandError = errorFromUnknown(error, "gh", ["repo", "create"], targetDir);
+      const commandError = errorFromUnknown(
+        error,
+        "gh",
+        ["repo", "create"],
+        targetDir
+      );
       if (!isNoCommitsError(commandError)) {
         throw commandError;
       }
     }
-    const repoName = await this.createRepoWithAutoName(targetDir, baseRepoName, visibility, 50, {
-      push: false,
-      remoteName: "origin"
-    });
+    const repoName = await this.createRepoWithAutoName(
+      targetDir,
+      baseRepoName,
+      visibility,
+      50,
+      {
+        push: false,
+        remoteName: "origin"
+      }
+    );
     const originUrl = await this.getOriginUrl(targetDir);
     if (await this.hasAnyCommit(targetDir)) {
       await this.push(targetDir);
@@ -1006,7 +1352,12 @@ var GitService = class {
         changedCount
       };
     } catch (error) {
-      const commandError = errorFromUnknown(error, "git", ["commit"], targetDir);
+      const commandError = errorFromUnknown(
+        error,
+        "git",
+        ["commit"],
+        targetDir
+      );
       const output = commandError.displayMessage().toLowerCase();
       if (output.includes("nothing to commit")) {
         return {
@@ -1035,7 +1386,10 @@ var GitService = class {
     } catch {
       return [];
     }
-    return this.findStandaloneReposUnderRoot(mirrorRootPath, mirrorRootRelativePath);
+    return this.findStandaloneReposUnderRoot(
+      mirrorRootPath,
+      mirrorRootRelativePath
+    );
   }
   async pushAllRepos(vaultBasePath, options) {
     const repoPaths = await this.findStandaloneRepos(vaultBasePath);
@@ -1048,7 +1402,9 @@ var GitService = class {
         try {
           const visibility = options?.resolveVisibility?.(vaultPath) ?? "private";
           const configuredBaseName = options?.resolveBaseRepoName?.(vaultPath);
-          const baseRepoName = sanitizeRepoName(configuredBaseName ?? folderName);
+          const baseRepoName = sanitizeRepoName(
+            configuredBaseName ?? folderName
+          );
           const linked = await this.linkLocalRepoWithoutOrigin(
             absolutePath,
             folderName,
@@ -1062,7 +1418,12 @@ var GitService = class {
             originUrl: linked.originUrl ?? void 0
           });
         } catch (error) {
-          const commandError = errorFromUnknown(error, "gh", ["repo", "create"], absolutePath);
+          const commandError = errorFromUnknown(
+            error,
+            "gh",
+            ["repo", "create"],
+            absolutePath
+          );
           results.push({
             targetType: "directory",
             vaultPath,
@@ -1073,7 +1434,12 @@ var GitService = class {
         continue;
       }
       const result = await this.pushDirectory(absolutePath, folderName);
-      results.push({ ...result, targetType: "directory", vaultPath, originUrl: repoState.originUrl });
+      results.push({
+        ...result,
+        targetType: "directory",
+        vaultPath,
+        originUrl: repoState.originUrl
+      });
     }
     const summary = {
       total: results.length,
@@ -1229,12 +1595,2136 @@ async function buildRepoInventory(options) {
   });
 }
 
+// src/services/static-site-publisher.ts
+var import_promises2 = __toESM(require("node:fs/promises"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
+
+// src/utils/slug.ts
+var RESERVED_SLUGS = /* @__PURE__ */ new Set(["blog", "feed", "static", "assets", "public"]);
+function sanitizeSlug(input) {
+  const lowered = input.trim().toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  const dashed = lowered.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return dashed;
+}
+function isReservedSlug(slug) {
+  return RESERVED_SLUGS.has(slug);
+}
+function isValidSlug(slug) {
+  if (slug.length === 0 || slug.length > 120) {
+    return false;
+  }
+  if (isReservedSlug(slug)) {
+    return false;
+  }
+  return /^[a-z0-9][a-z0-9-]*$/.test(slug);
+}
+
+// src/utils/frontmatter.ts
+function asString(value) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).trim();
+  }
+  return null;
+}
+function validatePostFrontmatter(raw) {
+  const errors = [];
+  const source = (raw && typeof raw === "object" ? raw : {}) ?? {};
+  const title = asString(source.title);
+  if (!title) {
+    errors.push({ field: "title", message: "title is required" });
+  }
+  const description = asString(source.description);
+  if (!description) {
+    errors.push({ field: "description", message: "description is required" });
+  }
+  const date = asString(source.date);
+  if (!date) {
+    errors.push({
+      field: "date",
+      message: "date is required (e.g. 2026-03-18T18:25Z)"
+    });
+  }
+  let slugRaw = asString(source.slug);
+  if (!slugRaw && title) {
+    slugRaw = sanitizeSlug(title);
+  }
+  if (!slugRaw) {
+    errors.push({ field: "slug", message: "slug is required" });
+  }
+  const sanitized = slugRaw ? sanitizeSlug(slugRaw) : "";
+  if (slugRaw && !isValidSlug(sanitized)) {
+    errors.push({
+      field: "slug",
+      message: `slug '${slugRaw}' is invalid. Use lowercase letters, numbers, and hyphens; avoid reserved names (blog, feed, static, assets, public).`
+    });
+  }
+  const hostCandidate = asString(source.host) ?? asString(source.hostId) ?? void 0;
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+  return {
+    ok: true,
+    value: {
+      title,
+      slug: sanitized,
+      date,
+      description,
+      hostId: hostCandidate ?? void 0
+    }
+  };
+}
+
+// node_modules/marked/lib/marked.esm.js
+function z() {
+  return { async: false, breaks: false, extensions: null, gfm: true, hooks: null, pedantic: false, renderer: null, silent: false, tokenizer: null, walkTokens: null };
+}
+var T = z();
+function G(l3) {
+  T = l3;
+}
+var _ = { exec: () => null };
+function k(l3, e = "") {
+  let t = typeof l3 == "string" ? l3 : l3.source, n = { replace: (s, r) => {
+    let i = typeof r == "string" ? r : r.source;
+    return i = i.replace(m.caret, "$1"), t = t.replace(s, i), n;
+  }, getRegex: () => new RegExp(t, e) };
+  return n;
+}
+var Re = ((l3 = "") => {
+  try {
+    return !!new RegExp("(?<=1)(?<!1)" + l3);
+  } catch {
+    return false;
+  }
+})();
+var m = { codeRemoveIndent: /^(?: {1,4}| {0,3}\t)/gm, outputLinkReplace: /\\([\[\]])/g, indentCodeCompensation: /^(\s+)(?:```)/, beginningSpace: /^\s+/, endingHash: /#$/, startingSpaceChar: /^ /, endingSpaceChar: / $/, nonSpaceChar: /[^ ]/, newLineCharGlobal: /\n/g, tabCharGlobal: /\t/g, multipleSpaceGlobal: /\s+/g, blankLine: /^[ \t]*$/, doubleBlankLine: /\n[ \t]*\n[ \t]*$/, blockquoteStart: /^ {0,3}>/, blockquoteSetextReplace: /\n {0,3}((?:=+|-+) *)(?=\n|$)/g, blockquoteSetextReplace2: /^ {0,3}>[ \t]?/gm, listReplaceNesting: /^ {1,4}(?=( {4})*[^ ])/g, listIsTask: /^\[[ xX]\] +\S/, listReplaceTask: /^\[[ xX]\] +/, listTaskCheckbox: /\[[ xX]\]/, anyLine: /\n.*\n/, hrefBrackets: /^<(.*)>$/, tableDelimiter: /[:|]/, tableAlignChars: /^\||\| *$/g, tableRowBlankLine: /\n[ \t]*$/, tableAlignRight: /^ *-+: *$/, tableAlignCenter: /^ *:-+: *$/, tableAlignLeft: /^ *:-+ *$/, startATag: /^<a /i, endATag: /^<\/a>/i, startPreScriptTag: /^<(pre|code|kbd|script)(\s|>)/i, endPreScriptTag: /^<\/(pre|code|kbd|script)(\s|>)/i, startAngleBracket: /^</, endAngleBracket: />$/, pedanticHrefTitle: /^([^'"]*[^\s])\s+(['"])(.*)\2/, unicodeAlphaNumeric: /[\p{L}\p{N}]/u, escapeTest: /[&<>"']/, escapeReplace: /[&<>"']/g, escapeTestNoEncode: /[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/, escapeReplaceNoEncode: /[<>"']|&(?!(#\d{1,7}|#[Xx][a-fA-F0-9]{1,6}|\w+);)/g, caret: /(^|[^\[])\^/g, percentDecode: /%25/g, findPipe: /\|/g, splitPipe: / \|/, slashPipe: /\\\|/g, carriageReturn: /\r\n|\r/g, spaceLine: /^ +$/gm, notSpaceStart: /^\S*/, endingNewline: /\n$/, listItemRegex: (l3) => new RegExp(`^( {0,3}${l3})((?:[	 ][^\\n]*)?(?:\\n|$))`), nextBulletRegex: (l3) => new RegExp(`^ {0,${Math.min(3, l3 - 1)}}(?:[*+-]|\\d{1,9}[.)])((?:[ 	][^\\n]*)?(?:\\n|$))`), hrRegex: (l3) => new RegExp(`^ {0,${Math.min(3, l3 - 1)}}((?:- *){3,}|(?:_ *){3,}|(?:\\* *){3,})(?:\\n+|$)`), fencesBeginRegex: (l3) => new RegExp(`^ {0,${Math.min(3, l3 - 1)}}(?:\`\`\`|~~~)`), headingBeginRegex: (l3) => new RegExp(`^ {0,${Math.min(3, l3 - 1)}}#`), htmlBeginRegex: (l3) => new RegExp(`^ {0,${Math.min(3, l3 - 1)}}<(?:[a-z].*>|!--)`, "i"), blockquoteBeginRegex: (l3) => new RegExp(`^ {0,${Math.min(3, l3 - 1)}}>`) };
+var Te = /^(?:[ \t]*(?:\n|$))+/;
+var Oe = /^((?: {4}| {0,3}\t)[^\n]+(?:\n(?:[ \t]*(?:\n|$))*)?)+/;
+var we = /^ {0,3}(`{3,}(?=[^`\n]*(?:\n|$))|~{3,})([^\n]*)(?:\n|$)(?:|([\s\S]*?)(?:\n|$))(?: {0,3}\1[~`]* *(?=\n|$)|$)/;
+var I = /^ {0,3}((?:-[\t ]*){3,}|(?:_[ \t]*){3,}|(?:\*[ \t]*){3,})(?:\n+|$)/;
+var ye = /^ {0,3}(#{1,6})(?=\s|$)(.*)(?:\n+|$)/;
+var Q = / {0,3}(?:[*+-]|\d{1,9}[.)])/;
+var ie = /^(?!bull |blockCode|fences|blockquote|heading|html|table)((?:.|\n(?!\s*?\n|bull |blockCode|fences|blockquote|heading|html|table))+?)\n {0,3}(=+|-+) *(?:\n+|$)/;
+var oe = k(ie).replace(/bull/g, Q).replace(/blockCode/g, /(?: {4}| {0,3}\t)/).replace(/fences/g, / {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g, / {0,3}>/).replace(/heading/g, / {0,3}#{1,6}/).replace(/html/g, / {0,3}<[^\n>]+>\n/).replace(/\|table/g, "").getRegex();
+var Pe = k(ie).replace(/bull/g, Q).replace(/blockCode/g, /(?: {4}| {0,3}\t)/).replace(/fences/g, / {0,3}(?:`{3,}|~{3,})/).replace(/blockquote/g, / {0,3}>/).replace(/heading/g, / {0,3}#{1,6}/).replace(/html/g, / {0,3}<[^\n>]+>\n/).replace(/table/g, / {0,3}\|?(?:[:\- ]*\|)+[\:\- ]*\n/).getRegex();
+var j = /^([^\n]+(?:\n(?!hr|heading|lheading|blockquote|fences|list|html|table| +\n)[^\n]+)*)/;
+var Se = /^[^\n]+/;
+var F = /(?!\s*\])(?:\\[\s\S]|[^\[\]\\])+/;
+var $e = k(/^ {0,3}\[(label)\]: *(?:\n[ \t]*)?([^<\s][^\s]*|<.*?>)(?:(?: +(?:\n[ \t]*)?| *\n[ \t]*)(title))? *(?:\n+|$)/).replace("label", F).replace("title", /(?:"(?:\\"?|[^"\\])*"|'[^'\n]*(?:\n[^'\n]+)*\n?'|\([^()]*\))/).getRegex();
+var Le = k(/^(bull)([ \t][^\n]+?)?(?:\n|$)/).replace(/bull/g, Q).getRegex();
+var v = "address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h[1-6]|head|header|hr|html|iframe|legend|li|link|main|menu|menuitem|meta|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|tbody|td|tfoot|th|thead|title|tr|track|ul";
+var U = /<!--(?:-?>|[\s\S]*?(?:-->|$))/;
+var _e = k("^ {0,3}(?:<(script|pre|style|textarea)[\\s>][\\s\\S]*?(?:</\\1>[^\\n]*\\n+|$)|comment[^\\n]*(\\n+|$)|<\\?[\\s\\S]*?(?:\\?>\\n*|$)|<![A-Z][\\s\\S]*?(?:>\\n*|$)|<!\\[CDATA\\[[\\s\\S]*?(?:\\]\\]>\\n*|$)|</?(tag)(?: +|\\n|/?>)[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|<(?!script|pre|style|textarea)([a-z][\\w-]*)(?:attribute)*? */?>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$)|</(?!script|pre|style|textarea)[a-z][\\w-]*\\s*>(?=[ \\t]*(?:\\n|$))[\\s\\S]*?(?:(?:\\n[ 	]*)+\\n|$))", "i").replace("comment", U).replace("tag", v).replace("attribute", / +[a-zA-Z:_][\w.:-]*(?: *= *"[^"\n]*"| *= *'[^'\n]*'| *= *[^\s"'=<>`]+)?/).getRegex();
+var ae = k(j).replace("hr", I).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("|lheading", "").replace("|table", "").replace("blockquote", " {0,3}>").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)])[ \\t]").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", v).getRegex();
+var Me = k(/^( {0,3}> ?(paragraph|[^\n]*)(?:\n|$))+/).replace("paragraph", ae).getRegex();
+var K = { blockquote: Me, code: Oe, def: $e, fences: we, heading: ye, hr: I, html: _e, lheading: oe, list: Le, newline: Te, paragraph: ae, table: _, text: Se };
+var re = k("^ *([^\\n ].*)\\n {0,3}((?:\\| *)?:?-+:? *(?:\\| *:?-+:? *)*(?:\\| *)?)(?:\\n((?:(?! *\\n|hr|heading|blockquote|code|fences|list|html).*(?:\\n|$))*)\\n*|$)").replace("hr", I).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("blockquote", " {0,3}>").replace("code", "(?: {4}| {0,3}	)[^\\n]").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)])[ \\t]").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", v).getRegex();
+var ze = { ...K, lheading: Pe, table: re, paragraph: k(j).replace("hr", I).replace("heading", " {0,3}#{1,6}(?:\\s|$)").replace("|lheading", "").replace("table", re).replace("blockquote", " {0,3}>").replace("fences", " {0,3}(?:`{3,}(?=[^`\\n]*\\n)|~{3,})[^\\n]*\\n").replace("list", " {0,3}(?:[*+-]|1[.)])[ \\t]").replace("html", "</?(?:tag)(?: +|\\n|/?>)|<(?:script|pre|style|textarea|!--)").replace("tag", v).getRegex() };
+var Ee = { ...K, html: k(`^ *(?:comment *(?:\\n|\\s*$)|<(tag)[\\s\\S]+?</\\1> *(?:\\n{2,}|\\s*$)|<tag(?:"[^"]*"|'[^']*'|\\s[^'"/>\\s]*)*?/?> *(?:\\n{2,}|\\s*$))`).replace("comment", U).replace(/tag/g, "(?!(?:a|em|strong|small|s|cite|q|dfn|abbr|data|time|code|var|samp|kbd|sub|sup|i|b|u|mark|ruby|rt|rp|bdi|bdo|span|br|wbr|ins|del|img)\\b)\\w+(?!:|[^\\w\\s@]*@)\\b").getRegex(), def: /^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +(["(][^\n]+[")]))? *(?:\n+|$)/, heading: /^(#{1,6})(.*)(?:\n+|$)/, fences: _, lheading: /^(.+?)\n {0,3}(=+|-+) *(?:\n+|$)/, paragraph: k(j).replace("hr", I).replace("heading", ` *#{1,6} *[^
+]`).replace("lheading", oe).replace("|table", "").replace("blockquote", " {0,3}>").replace("|fences", "").replace("|list", "").replace("|html", "").replace("|tag", "").getRegex() };
+var Ae = /^\\([!"#$%&'()*+,\-./:;<=>?@\[\]\\^_`{|}~])/;
+var Ce = /^(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)/;
+var le = /^( {2,}|\\)\n(?!\s*$)/;
+var Ie = /^(`+|[^`])(?:(?= {2,}\n)|[\s\S]*?(?:(?=[\\<!\[`*_]|\b_|$)|[^ ](?= {2,}\n)))/;
+var E = /[\p{P}\p{S}]/u;
+var H = /[\s\p{P}\p{S}]/u;
+var W = /[^\s\p{P}\p{S}]/u;
+var Be = k(/^((?![*_])punctSpace)/, "u").replace(/punctSpace/g, H).getRegex();
+var ue = /(?!~)[\p{P}\p{S}]/u;
+var De = /(?!~)[\s\p{P}\p{S}]/u;
+var qe = /(?:[^\s\p{P}\p{S}]|~)/u;
+var ve = k(/link|precode-code|html/, "g").replace("link", /\[(?:[^\[\]`]|(?<a>`+)[^`]+\k<a>(?!`))*?\]\((?:\\[\s\S]|[^\\\(\)]|\((?:\\[\s\S]|[^\\\(\)])*\))*\)/).replace("precode-", Re ? "(?<!`)()" : "(^^|[^`])").replace("code", /(?<b>`+)[^`]+\k<b>(?!`)/).replace("html", /<(?! )[^<>]*?>/).getRegex();
+var pe = /^(?:\*+(?:((?!\*)punct)|([^\s*]))?)|^_+(?:((?!_)punct)|([^\s_]))?/;
+var He = k(pe, "u").replace(/punct/g, E).getRegex();
+var Ze = k(pe, "u").replace(/punct/g, ue).getRegex();
+var ce = "^[^_*]*?__[^_*]*?\\*[^_*]*?(?=__)|[^*]+(?=[^*])|(?!\\*)punct(\\*+)(?=[\\s]|$)|notPunctSpace(\\*+)(?!\\*)(?=punctSpace|$)|(?!\\*)punctSpace(\\*+)(?=notPunctSpace)|[\\s](\\*+)(?!\\*)(?=punct)|(?!\\*)punct(\\*+)(?!\\*)(?=punct)|notPunctSpace(\\*+)(?=notPunctSpace)";
+var Ge = k(ce, "gu").replace(/notPunctSpace/g, W).replace(/punctSpace/g, H).replace(/punct/g, E).getRegex();
+var Ne = k(ce, "gu").replace(/notPunctSpace/g, qe).replace(/punctSpace/g, De).replace(/punct/g, ue).getRegex();
+var Qe = k("^[^_*]*?\\*\\*[^_*]*?_[^_*]*?(?=\\*\\*)|[^_]+(?=[^_])|(?!_)punct(_+)(?=[\\s]|$)|notPunctSpace(_+)(?!_)(?=punctSpace|$)|(?!_)punctSpace(_+)(?=notPunctSpace)|[\\s](_+)(?!_)(?=punct)|(?!_)punct(_+)(?!_)(?=punct)", "gu").replace(/notPunctSpace/g, W).replace(/punctSpace/g, H).replace(/punct/g, E).getRegex();
+var je = k(/^~~?(?:((?!~)punct)|[^\s~])/, "u").replace(/punct/g, E).getRegex();
+var Fe = "^[^~]+(?=[^~])|(?!~)punct(~~?)(?=[\\s]|$)|notPunctSpace(~~?)(?!~)(?=punctSpace|$)|(?!~)punctSpace(~~?)(?=notPunctSpace)|[\\s](~~?)(?!~)(?=punct)|(?!~)punct(~~?)(?!~)(?=punct)|notPunctSpace(~~?)(?=notPunctSpace)";
+var Ue = k(Fe, "gu").replace(/notPunctSpace/g, W).replace(/punctSpace/g, H).replace(/punct/g, E).getRegex();
+var Ke = k(/\\(punct)/, "gu").replace(/punct/g, E).getRegex();
+var We = k(/^<(scheme:[^\s\x00-\x1f<>]*|email)>/).replace("scheme", /[a-zA-Z][a-zA-Z0-9+.-]{1,31}/).replace("email", /[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+(@)[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(?![-_])/).getRegex();
+var Xe = k(U).replace("(?:-->|$)", "-->").getRegex();
+var Je = k("^comment|^</[a-zA-Z][\\w:-]*\\s*>|^<[a-zA-Z][\\w-]*(?:attribute)*?\\s*/?>|^<\\?[\\s\\S]*?\\?>|^<![a-zA-Z]+\\s[\\s\\S]*?>|^<!\\[CDATA\\[[\\s\\S]*?\\]\\]>").replace("comment", Xe).replace("attribute", /\s+[a-zA-Z:_][\w.:-]*(?:\s*=\s*"[^"]*"|\s*=\s*'[^']*'|\s*=\s*[^\s"'=<>`]+)?/).getRegex();
+var q = /(?:\[(?:\\[\s\S]|[^\[\]\\])*\]|\\[\s\S]|`+(?!`)[^`]*?`+(?!`)|``+(?=\])|[^\[\]\\`])*?/;
+var Ve = k(/^!?\[(label)\]\(\s*(href)(?:(?:[ \t]+(?:\n[ \t]*)?|\n[ \t]*)(title))?\s*\)/).replace("label", q).replace("href", /<(?:\\.|[^\n<>\\])+>|[^ \t\n\x00-\x1f]*/).replace("title", /"(?:\\"?|[^"\\])*"|'(?:\\'?|[^'\\])*'|\((?:\\\)?|[^)\\])*\)/).getRegex();
+var he = k(/^!?\[(label)\]\[(ref)\]/).replace("label", q).replace("ref", F).getRegex();
+var ke = k(/^!?\[(ref)\](?:\[\])?/).replace("ref", F).getRegex();
+var Ye = k("reflink|nolink(?!\\()", "g").replace("reflink", he).replace("nolink", ke).getRegex();
+var se = /[hH][tT][tT][pP][sS]?|[fF][tT][pP]/;
+var X = { _backpedal: _, anyPunctuation: Ke, autolink: We, blockSkip: ve, br: le, code: Ce, del: _, delLDelim: _, delRDelim: _, emStrongLDelim: He, emStrongRDelimAst: Ge, emStrongRDelimUnd: Qe, escape: Ae, link: Ve, nolink: ke, punctuation: Be, reflink: he, reflinkSearch: Ye, tag: Je, text: Ie, url: _ };
+var et = { ...X, link: k(/^!?\[(label)\]\((.*?)\)/).replace("label", q).getRegex(), reflink: k(/^!?\[(label)\]\s*\[([^\]]*)\]/).replace("label", q).getRegex() };
+var N = { ...X, emStrongRDelimAst: Ne, emStrongLDelim: Ze, delLDelim: je, delRDelim: Ue, url: k(/^((?:protocol):\/\/|www\.)(?:[a-zA-Z0-9\-]+\.?)+[^\s<]*|^email/).replace("protocol", se).replace("email", /[A-Za-z0-9._+-]+(@)[a-zA-Z0-9-_]+(?:\.[a-zA-Z0-9-_]*[a-zA-Z0-9])+(?![-_])/).getRegex(), _backpedal: /(?:[^?!.,:;*_'"~()&]+|\([^)]*\)|&(?![a-zA-Z0-9]+;$)|[?!.,:;*_'"~)]+(?!$))+/, del: /^(~~?)(?=[^\s~])((?:\\[\s\S]|[^\\])*?(?:\\[\s\S]|[^\s~\\]))\1(?=[^~]|$)/, text: k(/^([`~]+|[^`~])(?:(?= {2,}\n)|(?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)|[\s\S]*?(?:(?=[\\<!\[`*~_]|\b_|protocol:\/\/|www\.|$)|[^ ](?= {2,}\n)|[^a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-](?=[a-zA-Z0-9.!#$%&'*+\/=?_`{\|}~-]+@)))/).replace("protocol", se).getRegex() };
+var tt = { ...N, br: k(le).replace("{2,}", "*").getRegex(), text: k(N.text).replace("\\b_", "\\b_| {2,}\\n").replace(/\{2,\}/g, "*").getRegex() };
+var B = { normal: K, gfm: ze, pedantic: Ee };
+var A = { normal: X, gfm: N, breaks: tt, pedantic: et };
+var nt = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+var de = (l3) => nt[l3];
+function O(l3, e) {
+  if (e) {
+    if (m.escapeTest.test(l3)) return l3.replace(m.escapeReplace, de);
+  } else if (m.escapeTestNoEncode.test(l3)) return l3.replace(m.escapeReplaceNoEncode, de);
+  return l3;
+}
+function J(l3) {
+  try {
+    l3 = encodeURI(l3).replace(m.percentDecode, "%");
+  } catch {
+    return null;
+  }
+  return l3;
+}
+function V(l3, e) {
+  let t = l3.replace(m.findPipe, (r, i, o) => {
+    let u = false, a = i;
+    for (; --a >= 0 && o[a] === "\\"; ) u = !u;
+    return u ? "|" : " |";
+  }), n = t.split(m.splitPipe), s = 0;
+  if (n[0].trim() || n.shift(), n.length > 0 && !n.at(-1)?.trim() && n.pop(), e) if (n.length > e) n.splice(e);
+  else for (; n.length < e; ) n.push("");
+  for (; s < n.length; s++) n[s] = n[s].trim().replace(m.slashPipe, "|");
+  return n;
+}
+function $(l3, e, t) {
+  let n = l3.length;
+  if (n === 0) return "";
+  let s = 0;
+  for (; s < n; ) {
+    let r = l3.charAt(n - s - 1);
+    if (r === e && !t) s++;
+    else if (r !== e && t) s++;
+    else break;
+  }
+  return l3.slice(0, n - s);
+}
+function Y(l3) {
+  let e = l3.split(`
+`), t = e.length - 1;
+  for (; t >= 0 && m.blankLine.test(e[t]); ) t--;
+  return e.length - t <= 2 ? l3 : e.slice(0, t + 1).join(`
+`);
+}
+function ge(l3, e) {
+  if (l3.indexOf(e[1]) === -1) return -1;
+  let t = 0;
+  for (let n = 0; n < l3.length; n++) if (l3[n] === "\\") n++;
+  else if (l3[n] === e[0]) t++;
+  else if (l3[n] === e[1] && (t--, t < 0)) return n;
+  return t > 0 ? -2 : -1;
+}
+function fe(l3, e = 0) {
+  let t = e, n = "";
+  for (let s of l3) if (s === "	") {
+    let r = 4 - t % 4;
+    n += " ".repeat(r), t += r;
+  } else n += s, t++;
+  return n;
+}
+function me(l3, e, t, n, s) {
+  let r = e.href, i = e.title || null, o = l3[1].replace(s.other.outputLinkReplace, "$1");
+  n.state.inLink = true;
+  let u = { type: l3[0].charAt(0) === "!" ? "image" : "link", raw: t, href: r, title: i, text: o, tokens: n.inlineTokens(o) };
+  return n.state.inLink = false, u;
+}
+function rt(l3, e, t) {
+  let n = l3.match(t.other.indentCodeCompensation);
+  if (n === null) return e;
+  let s = n[1];
+  return e.split(`
+`).map((r) => {
+    let i = r.match(t.other.beginningSpace);
+    if (i === null) return r;
+    let [o] = i;
+    return o.length >= s.length ? r.slice(s.length) : r;
+  }).join(`
+`);
+}
+var w = class {
+  constructor(e) {
+    __publicField(this, "options");
+    __publicField(this, "rules");
+    __publicField(this, "lexer");
+    this.options = e || T;
+  }
+  space(e) {
+    let t = this.rules.block.newline.exec(e);
+    if (t && t[0].length > 0) return { type: "space", raw: t[0] };
+  }
+  code(e) {
+    let t = this.rules.block.code.exec(e);
+    if (t) {
+      let n = this.options.pedantic ? t[0] : Y(t[0]), s = n.replace(this.rules.other.codeRemoveIndent, "");
+      return { type: "code", raw: n, codeBlockStyle: "indented", text: s };
+    }
+  }
+  fences(e) {
+    let t = this.rules.block.fences.exec(e);
+    if (t) {
+      let n = t[0], s = rt(n, t[3] || "", this.rules);
+      return { type: "code", raw: n, lang: t[2] ? t[2].trim().replace(this.rules.inline.anyPunctuation, "$1") : t[2], text: s };
+    }
+  }
+  heading(e) {
+    let t = this.rules.block.heading.exec(e);
+    if (t) {
+      let n = t[2].trim();
+      if (this.rules.other.endingHash.test(n)) {
+        let s = $(n, "#");
+        (this.options.pedantic || !s || this.rules.other.endingSpaceChar.test(s)) && (n = s.trim());
+      }
+      return { type: "heading", raw: $(t[0], `
+`), depth: t[1].length, text: n, tokens: this.lexer.inline(n) };
+    }
+  }
+  hr(e) {
+    let t = this.rules.block.hr.exec(e);
+    if (t) return { type: "hr", raw: $(t[0], `
+`) };
+  }
+  blockquote(e) {
+    let t = this.rules.block.blockquote.exec(e);
+    if (t) {
+      let n = $(t[0], `
+`).split(`
+`), s = "", r = "", i = [];
+      for (; n.length > 0; ) {
+        let o = false, u = [], a;
+        for (a = 0; a < n.length; a++) if (this.rules.other.blockquoteStart.test(n[a])) u.push(n[a]), o = true;
+        else if (!o) u.push(n[a]);
+        else break;
+        n = n.slice(a);
+        let c = u.join(`
+`), p = c.replace(this.rules.other.blockquoteSetextReplace, `
+    $1`).replace(this.rules.other.blockquoteSetextReplace2, "");
+        s = s ? `${s}
+${c}` : c, r = r ? `${r}
+${p}` : p;
+        let d = this.lexer.state.top;
+        if (this.lexer.state.top = true, this.lexer.blockTokens(p, i, true), this.lexer.state.top = d, n.length === 0) break;
+        let h = i.at(-1);
+        if (h?.type === "code") break;
+        if (h?.type === "blockquote") {
+          let R = h, f = R.raw + `
+` + n.join(`
+`), S = this.blockquote(f);
+          i[i.length - 1] = S, s = s.substring(0, s.length - R.raw.length) + S.raw, r = r.substring(0, r.length - R.text.length) + S.text;
+          break;
+        } else if (h?.type === "list") {
+          let R = h, f = R.raw + `
+` + n.join(`
+`), S = this.list(f);
+          i[i.length - 1] = S, s = s.substring(0, s.length - h.raw.length) + S.raw, r = r.substring(0, r.length - R.raw.length) + S.raw, n = f.substring(i.at(-1).raw.length).split(`
+`);
+          continue;
+        }
+      }
+      return { type: "blockquote", raw: s, tokens: i, text: r };
+    }
+  }
+  list(e) {
+    let t = this.rules.block.list.exec(e);
+    if (t) {
+      let n = t[1].trim(), s = n.length > 1, r = { type: "list", raw: "", ordered: s, start: s ? +n.slice(0, -1) : "", loose: false, items: [] };
+      n = s ? `\\d{1,9}\\${n.slice(-1)}` : `\\${n}`, this.options.pedantic && (n = s ? n : "[*+-]");
+      let i = this.rules.other.listItemRegex(n), o = false;
+      for (; e; ) {
+        let a = false, c = "", p = "";
+        if (!(t = i.exec(e)) || this.rules.block.hr.test(e)) break;
+        c = t[0], e = e.substring(c.length);
+        let d = fe(t[2].split(`
+`, 1)[0], t[1].length), h = e.split(`
+`, 1)[0], R = !d.trim(), f = 0;
+        if (this.options.pedantic ? (f = 2, p = d.trimStart()) : R ? f = t[1].length + 1 : (f = d.search(this.rules.other.nonSpaceChar), f = f > 4 ? 1 : f, p = d.slice(f), f += t[1].length), R && this.rules.other.blankLine.test(h) && (c += h + `
+`, e = e.substring(h.length + 1), a = true), !a) {
+          let S = this.rules.other.nextBulletRegex(f), ee = this.rules.other.hrRegex(f), te = this.rules.other.fencesBeginRegex(f), ne = this.rules.other.headingBeginRegex(f), xe = this.rules.other.htmlBeginRegex(f), be = this.rules.other.blockquoteBeginRegex(f);
+          for (; e; ) {
+            let Z = e.split(`
+`, 1)[0], C;
+            if (h = Z, this.options.pedantic ? (h = h.replace(this.rules.other.listReplaceNesting, "  "), C = h) : C = h.replace(this.rules.other.tabCharGlobal, "    "), te.test(h) || ne.test(h) || xe.test(h) || be.test(h) || S.test(h) || ee.test(h)) break;
+            if (C.search(this.rules.other.nonSpaceChar) >= f || !h.trim()) p += `
+` + C.slice(f);
+            else {
+              if (R || d.replace(this.rules.other.tabCharGlobal, "    ").search(this.rules.other.nonSpaceChar) >= 4 || te.test(d) || ne.test(d) || ee.test(d)) break;
+              p += `
+` + h;
+            }
+            R = !h.trim(), c += Z + `
+`, e = e.substring(Z.length + 1), d = C.slice(f);
+          }
+        }
+        r.loose || (o ? r.loose = true : this.rules.other.doubleBlankLine.test(c) && (o = true)), r.items.push({ type: "list_item", raw: c, task: !!this.options.gfm && this.rules.other.listIsTask.test(p), loose: false, text: p, tokens: [] }), r.raw += c;
+      }
+      let u = r.items.at(-1);
+      if (u) u.raw = u.raw.trimEnd(), u.text = u.text.trimEnd();
+      else return;
+      r.raw = r.raw.trimEnd();
+      for (let a of r.items) {
+        if (this.lexer.state.top = false, a.tokens = this.lexer.blockTokens(a.text, []), a.task) {
+          if (a.text = a.text.replace(this.rules.other.listReplaceTask, ""), a.tokens[0]?.type === "text" || a.tokens[0]?.type === "paragraph") {
+            a.tokens[0].raw = a.tokens[0].raw.replace(this.rules.other.listReplaceTask, ""), a.tokens[0].text = a.tokens[0].text.replace(this.rules.other.listReplaceTask, "");
+            for (let p = this.lexer.inlineQueue.length - 1; p >= 0; p--) if (this.rules.other.listIsTask.test(this.lexer.inlineQueue[p].src)) {
+              this.lexer.inlineQueue[p].src = this.lexer.inlineQueue[p].src.replace(this.rules.other.listReplaceTask, "");
+              break;
+            }
+          }
+          let c = this.rules.other.listTaskCheckbox.exec(a.raw);
+          if (c) {
+            let p = { type: "checkbox", raw: c[0] + " ", checked: c[0] !== "[ ]" };
+            a.checked = p.checked, r.loose ? a.tokens[0] && ["paragraph", "text"].includes(a.tokens[0].type) && "tokens" in a.tokens[0] && a.tokens[0].tokens ? (a.tokens[0].raw = p.raw + a.tokens[0].raw, a.tokens[0].text = p.raw + a.tokens[0].text, a.tokens[0].tokens.unshift(p)) : a.tokens.unshift({ type: "paragraph", raw: p.raw, text: p.raw, tokens: [p] }) : a.tokens.unshift(p);
+          }
+        }
+        if (!r.loose) {
+          let c = a.tokens.filter((d) => d.type === "space"), p = c.length > 0 && c.some((d) => this.rules.other.anyLine.test(d.raw));
+          r.loose = p;
+        }
+      }
+      if (r.loose) for (let a of r.items) {
+        a.loose = true;
+        for (let c of a.tokens) c.type === "text" && (c.type = "paragraph");
+      }
+      return r;
+    }
+  }
+  html(e) {
+    let t = this.rules.block.html.exec(e);
+    if (t) {
+      let n = Y(t[0]);
+      return { type: "html", block: true, raw: n, pre: t[1] === "pre" || t[1] === "script" || t[1] === "style", text: n };
+    }
+  }
+  def(e) {
+    let t = this.rules.block.def.exec(e);
+    if (t) {
+      let n = t[1].toLowerCase().replace(this.rules.other.multipleSpaceGlobal, " "), s = t[2] ? t[2].replace(this.rules.other.hrefBrackets, "$1").replace(this.rules.inline.anyPunctuation, "$1") : "", r = t[3] ? t[3].substring(1, t[3].length - 1).replace(this.rules.inline.anyPunctuation, "$1") : t[3];
+      return { type: "def", tag: n, raw: $(t[0], `
+`), href: s, title: r };
+    }
+  }
+  table(e) {
+    let t = this.rules.block.table.exec(e);
+    if (!t || !this.rules.other.tableDelimiter.test(t[2])) return;
+    let n = V(t[1]), s = t[2].replace(this.rules.other.tableAlignChars, "").split("|"), r = t[3]?.trim() ? t[3].replace(this.rules.other.tableRowBlankLine, "").split(`
+`) : [], i = { type: "table", raw: $(t[0], `
+`), header: [], align: [], rows: [] };
+    if (n.length === s.length) {
+      for (let o of s) this.rules.other.tableAlignRight.test(o) ? i.align.push("right") : this.rules.other.tableAlignCenter.test(o) ? i.align.push("center") : this.rules.other.tableAlignLeft.test(o) ? i.align.push("left") : i.align.push(null);
+      for (let o = 0; o < n.length; o++) i.header.push({ text: n[o], tokens: this.lexer.inline(n[o]), header: true, align: i.align[o] });
+      for (let o of r) i.rows.push(V(o, i.header.length).map((u, a) => ({ text: u, tokens: this.lexer.inline(u), header: false, align: i.align[a] })));
+      return i;
+    }
+  }
+  lheading(e) {
+    let t = this.rules.block.lheading.exec(e);
+    if (t) {
+      let n = t[1].trim();
+      return { type: "heading", raw: $(t[0], `
+`), depth: t[2].charAt(0) === "=" ? 1 : 2, text: n, tokens: this.lexer.inline(n) };
+    }
+  }
+  paragraph(e) {
+    let t = this.rules.block.paragraph.exec(e);
+    if (t) {
+      let n = t[1].charAt(t[1].length - 1) === `
+` ? t[1].slice(0, -1) : t[1];
+      return { type: "paragraph", raw: t[0], text: n, tokens: this.lexer.inline(n) };
+    }
+  }
+  text(e) {
+    let t = this.rules.block.text.exec(e);
+    if (t) return { type: "text", raw: t[0], text: t[0], tokens: this.lexer.inline(t[0]) };
+  }
+  escape(e) {
+    let t = this.rules.inline.escape.exec(e);
+    if (t) return { type: "escape", raw: t[0], text: t[1] };
+  }
+  tag(e) {
+    let t = this.rules.inline.tag.exec(e);
+    if (t) return !this.lexer.state.inLink && this.rules.other.startATag.test(t[0]) ? this.lexer.state.inLink = true : this.lexer.state.inLink && this.rules.other.endATag.test(t[0]) && (this.lexer.state.inLink = false), !this.lexer.state.inRawBlock && this.rules.other.startPreScriptTag.test(t[0]) ? this.lexer.state.inRawBlock = true : this.lexer.state.inRawBlock && this.rules.other.endPreScriptTag.test(t[0]) && (this.lexer.state.inRawBlock = false), { type: "html", raw: t[0], inLink: this.lexer.state.inLink, inRawBlock: this.lexer.state.inRawBlock, block: false, text: t[0] };
+  }
+  link(e) {
+    let t = this.rules.inline.link.exec(e);
+    if (t) {
+      let n = t[2].trim();
+      if (!this.options.pedantic && this.rules.other.startAngleBracket.test(n)) {
+        if (!this.rules.other.endAngleBracket.test(n)) return;
+        let i = $(n.slice(0, -1), "\\");
+        if ((n.length - i.length) % 2 === 0) return;
+      } else {
+        let i = ge(t[2], "()");
+        if (i === -2) return;
+        if (i > -1) {
+          let u = (t[0].indexOf("!") === 0 ? 5 : 4) + t[1].length + i;
+          t[2] = t[2].substring(0, i), t[0] = t[0].substring(0, u).trim(), t[3] = "";
+        }
+      }
+      let s = t[2], r = "";
+      if (this.options.pedantic) {
+        let i = this.rules.other.pedanticHrefTitle.exec(s);
+        i && (s = i[1], r = i[3]);
+      } else r = t[3] ? t[3].slice(1, -1) : "";
+      return s = s.trim(), this.rules.other.startAngleBracket.test(s) && (this.options.pedantic && !this.rules.other.endAngleBracket.test(n) ? s = s.slice(1) : s = s.slice(1, -1)), me(t, { href: s && s.replace(this.rules.inline.anyPunctuation, "$1"), title: r && r.replace(this.rules.inline.anyPunctuation, "$1") }, t[0], this.lexer, this.rules);
+    }
+  }
+  reflink(e, t) {
+    let n;
+    if ((n = this.rules.inline.reflink.exec(e)) || (n = this.rules.inline.nolink.exec(e))) {
+      let s = (n[2] || n[1]).replace(this.rules.other.multipleSpaceGlobal, " "), r = t[s.toLowerCase()];
+      if (!r) {
+        let i = n[0].charAt(0);
+        return { type: "text", raw: i, text: i };
+      }
+      return me(n, r, n[0], this.lexer, this.rules);
+    }
+  }
+  emStrong(e, t, n = "") {
+    let s = this.rules.inline.emStrongLDelim.exec(e);
+    if (!s || !s[1] && !s[2] && !s[3] && !s[4] || s[4] && n.match(this.rules.other.unicodeAlphaNumeric)) return;
+    if (!(s[1] || s[3] || "") || !n || this.rules.inline.punctuation.exec(n)) {
+      let i = [...s[0]].length - 1, o, u, a = i, c = 0, p = s[0][0] === "*" ? this.rules.inline.emStrongRDelimAst : this.rules.inline.emStrongRDelimUnd;
+      for (p.lastIndex = 0, t = t.slice(-1 * e.length + i); (s = p.exec(t)) !== null; ) {
+        if (o = s[1] || s[2] || s[3] || s[4] || s[5] || s[6], !o) continue;
+        if (u = [...o].length, s[3] || s[4]) {
+          a += u;
+          continue;
+        } else if ((s[5] || s[6]) && i % 3 && !((i + u) % 3)) {
+          c += u;
+          continue;
+        }
+        if (a -= u, a > 0) continue;
+        u = Math.min(u, u + a + c);
+        let d = [...s[0]][0].length, h = e.slice(0, i + s.index + d + u);
+        if (Math.min(i, u) % 2) {
+          let f = h.slice(1, -1);
+          return { type: "em", raw: h, text: f, tokens: this.lexer.inlineTokens(f) };
+        }
+        let R = h.slice(2, -2);
+        return { type: "strong", raw: h, text: R, tokens: this.lexer.inlineTokens(R) };
+      }
+    }
+  }
+  codespan(e) {
+    let t = this.rules.inline.code.exec(e);
+    if (t) {
+      let n = t[2].replace(this.rules.other.newLineCharGlobal, " "), s = this.rules.other.nonSpaceChar.test(n), r = this.rules.other.startingSpaceChar.test(n) && this.rules.other.endingSpaceChar.test(n);
+      return s && r && (n = n.substring(1, n.length - 1)), { type: "codespan", raw: t[0], text: n };
+    }
+  }
+  br(e) {
+    let t = this.rules.inline.br.exec(e);
+    if (t) return { type: "br", raw: t[0] };
+  }
+  del(e, t, n = "") {
+    let s = this.rules.inline.delLDelim.exec(e);
+    if (!s) return;
+    if (!(s[1] || "") || !n || this.rules.inline.punctuation.exec(n)) {
+      let i = [...s[0]].length - 1, o, u, a = i, c = this.rules.inline.delRDelim;
+      for (c.lastIndex = 0, t = t.slice(-1 * e.length + i); (s = c.exec(t)) !== null; ) {
+        if (o = s[1] || s[2] || s[3] || s[4] || s[5] || s[6], !o || (u = [...o].length, u !== i)) continue;
+        if (s[3] || s[4]) {
+          a += u;
+          continue;
+        }
+        if (a -= u, a > 0) continue;
+        u = Math.min(u, u + a);
+        let p = [...s[0]][0].length, d = e.slice(0, i + s.index + p + u), h = d.slice(i, -i);
+        return { type: "del", raw: d, text: h, tokens: this.lexer.inlineTokens(h) };
+      }
+    }
+  }
+  autolink(e) {
+    let t = this.rules.inline.autolink.exec(e);
+    if (t) {
+      let n, s;
+      return t[2] === "@" ? (n = t[1], s = "mailto:" + n) : (n = t[1], s = n), { type: "link", raw: t[0], text: n, href: s, tokens: [{ type: "text", raw: n, text: n }] };
+    }
+  }
+  url(e) {
+    let t;
+    if (t = this.rules.inline.url.exec(e)) {
+      let n, s;
+      if (t[2] === "@") n = t[0], s = "mailto:" + n;
+      else {
+        let r;
+        do
+          r = t[0], t[0] = this.rules.inline._backpedal.exec(t[0])?.[0] ?? "";
+        while (r !== t[0]);
+        n = t[0], t[1] === "www." ? s = "http://" + t[0] : s = t[0];
+      }
+      return { type: "link", raw: t[0], text: n, href: s, tokens: [{ type: "text", raw: n, text: n }] };
+    }
+  }
+  inlineText(e) {
+    let t = this.rules.inline.text.exec(e);
+    if (t) {
+      let n = this.lexer.state.inRawBlock;
+      return { type: "text", raw: t[0], text: t[0], escaped: n };
+    }
+  }
+};
+var x = class l {
+  constructor(e) {
+    __publicField(this, "tokens");
+    __publicField(this, "options");
+    __publicField(this, "state");
+    __publicField(this, "inlineQueue");
+    __publicField(this, "tokenizer");
+    this.tokens = [], this.tokens.links = /* @__PURE__ */ Object.create(null), this.options = e || T, this.options.tokenizer = this.options.tokenizer || new w(), this.tokenizer = this.options.tokenizer, this.tokenizer.options = this.options, this.tokenizer.lexer = this, this.inlineQueue = [], this.state = { inLink: false, inRawBlock: false, top: true };
+    let t = { other: m, block: B.normal, inline: A.normal };
+    this.options.pedantic ? (t.block = B.pedantic, t.inline = A.pedantic) : this.options.gfm && (t.block = B.gfm, this.options.breaks ? t.inline = A.breaks : t.inline = A.gfm), this.tokenizer.rules = t;
+  }
+  static get rules() {
+    return { block: B, inline: A };
+  }
+  static lex(e, t) {
+    return new l(t).lex(e);
+  }
+  static lexInline(e, t) {
+    return new l(t).inlineTokens(e);
+  }
+  lex(e) {
+    e = e.replace(m.carriageReturn, `
+`), this.blockTokens(e, this.tokens);
+    for (let t = 0; t < this.inlineQueue.length; t++) {
+      let n = this.inlineQueue[t];
+      this.inlineTokens(n.src, n.tokens);
+    }
+    return this.inlineQueue = [], this.tokens;
+  }
+  blockTokens(e, t = [], n = false) {
+    this.tokenizer.lexer = this, this.options.pedantic && (e = e.replace(m.tabCharGlobal, "    ").replace(m.spaceLine, ""));
+    let s = 1 / 0;
+    for (; e; ) {
+      if (e.length < s) s = e.length;
+      else {
+        this.infiniteLoopError(e.charCodeAt(0));
+        break;
+      }
+      let r;
+      if (this.options.extensions?.block?.some((o) => (r = o.call({ lexer: this }, e, t)) ? (e = e.substring(r.raw.length), t.push(r), true) : false)) continue;
+      if (r = this.tokenizer.space(e)) {
+        e = e.substring(r.raw.length);
+        let o = t.at(-1);
+        r.raw.length === 1 && o !== void 0 ? o.raw += `
+` : t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.code(e)) {
+        e = e.substring(r.raw.length);
+        let o = t.at(-1);
+        o?.type === "paragraph" || o?.type === "text" ? (o.raw += (o.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, o.text += `
+` + r.text, this.inlineQueue.at(-1).src = o.text) : t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.fences(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.heading(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.hr(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.blockquote(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.list(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.html(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.def(e)) {
+        e = e.substring(r.raw.length);
+        let o = t.at(-1);
+        o?.type === "paragraph" || o?.type === "text" ? (o.raw += (o.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, o.text += `
+` + r.raw, this.inlineQueue.at(-1).src = o.text) : this.tokens.links[r.tag] || (this.tokens.links[r.tag] = { href: r.href, title: r.title }, t.push(r));
+        continue;
+      }
+      if (r = this.tokenizer.table(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      if (r = this.tokenizer.lheading(e)) {
+        e = e.substring(r.raw.length), t.push(r);
+        continue;
+      }
+      let i = e;
+      if (this.options.extensions?.startBlock) {
+        let o = 1 / 0, u = e.slice(1), a;
+        this.options.extensions.startBlock.forEach((c) => {
+          a = c.call({ lexer: this }, u), typeof a == "number" && a >= 0 && (o = Math.min(o, a));
+        }), o < 1 / 0 && o >= 0 && (i = e.substring(0, o + 1));
+      }
+      if (this.state.top && (r = this.tokenizer.paragraph(i))) {
+        let o = t.at(-1);
+        n && o?.type === "paragraph" ? (o.raw += (o.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, o.text += `
+` + r.text, this.inlineQueue.pop(), this.inlineQueue.at(-1).src = o.text) : t.push(r), n = i.length !== e.length, e = e.substring(r.raw.length);
+        continue;
+      }
+      if (r = this.tokenizer.text(e)) {
+        e = e.substring(r.raw.length);
+        let o = t.at(-1);
+        o?.type === "text" ? (o.raw += (o.raw.endsWith(`
+`) ? "" : `
+`) + r.raw, o.text += `
+` + r.text, this.inlineQueue.pop(), this.inlineQueue.at(-1).src = o.text) : t.push(r);
+        continue;
+      }
+      if (e) {
+        this.infiniteLoopError(e.charCodeAt(0));
+        break;
+      }
+    }
+    return this.state.top = true, t;
+  }
+  inline(e, t = []) {
+    return this.inlineQueue.push({ src: e, tokens: t }), t;
+  }
+  inlineTokens(e, t = []) {
+    this.tokenizer.lexer = this;
+    let n = e, s = null;
+    if (this.tokens.links) {
+      let a = Object.keys(this.tokens.links);
+      if (a.length > 0) for (; (s = this.tokenizer.rules.inline.reflinkSearch.exec(n)) !== null; ) a.includes(s[0].slice(s[0].lastIndexOf("[") + 1, -1)) && (n = n.slice(0, s.index) + "[" + "a".repeat(s[0].length - 2) + "]" + n.slice(this.tokenizer.rules.inline.reflinkSearch.lastIndex));
+    }
+    for (; (s = this.tokenizer.rules.inline.anyPunctuation.exec(n)) !== null; ) n = n.slice(0, s.index) + "++" + n.slice(this.tokenizer.rules.inline.anyPunctuation.lastIndex);
+    let r;
+    for (; (s = this.tokenizer.rules.inline.blockSkip.exec(n)) !== null; ) r = s[2] ? s[2].length : 0, n = n.slice(0, s.index + r) + "[" + "a".repeat(s[0].length - r - 2) + "]" + n.slice(this.tokenizer.rules.inline.blockSkip.lastIndex);
+    n = this.options.hooks?.emStrongMask?.call({ lexer: this }, n) ?? n;
+    let i = false, o = "", u = 1 / 0;
+    for (; e; ) {
+      if (e.length < u) u = e.length;
+      else {
+        this.infiniteLoopError(e.charCodeAt(0));
+        break;
+      }
+      i || (o = ""), i = false;
+      let a;
+      if (this.options.extensions?.inline?.some((p) => (a = p.call({ lexer: this }, e, t)) ? (e = e.substring(a.raw.length), t.push(a), true) : false)) continue;
+      if (a = this.tokenizer.escape(e)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.tag(e)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.link(e)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.reflink(e, this.tokens.links)) {
+        e = e.substring(a.raw.length);
+        let p = t.at(-1);
+        a.type === "text" && p?.type === "text" ? (p.raw += a.raw, p.text += a.text) : t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.emStrong(e, n, o)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.codespan(e)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.br(e)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.del(e, n, o)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (a = this.tokenizer.autolink(e)) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      if (!this.state.inLink && (a = this.tokenizer.url(e))) {
+        e = e.substring(a.raw.length), t.push(a);
+        continue;
+      }
+      let c = e;
+      if (this.options.extensions?.startInline) {
+        let p = 1 / 0, d = e.slice(1), h;
+        this.options.extensions.startInline.forEach((R) => {
+          h = R.call({ lexer: this }, d), typeof h == "number" && h >= 0 && (p = Math.min(p, h));
+        }), p < 1 / 0 && p >= 0 && (c = e.substring(0, p + 1));
+      }
+      if (a = this.tokenizer.inlineText(c)) {
+        e = e.substring(a.raw.length), a.raw.slice(-1) !== "_" && (o = a.raw.slice(-1)), i = true;
+        let p = t.at(-1);
+        p?.type === "text" ? (p.raw += a.raw, p.text += a.text) : t.push(a);
+        continue;
+      }
+      if (e) {
+        this.infiniteLoopError(e.charCodeAt(0));
+        break;
+      }
+    }
+    return t;
+  }
+  infiniteLoopError(e) {
+    let t = "Infinite loop on byte: " + e;
+    if (this.options.silent) console.error(t);
+    else throw new Error(t);
+  }
+};
+var y = class {
+  constructor(e) {
+    __publicField(this, "options");
+    __publicField(this, "parser");
+    this.options = e || T;
+  }
+  space(e) {
+    return "";
+  }
+  code({ text: e, lang: t, escaped: n }) {
+    let s = (t || "").match(m.notSpaceStart)?.[0], r = e.replace(m.endingNewline, "") + `
+`;
+    return s ? '<pre><code class="language-' + O(s) + '">' + (n ? r : O(r, true)) + `</code></pre>
+` : "<pre><code>" + (n ? r : O(r, true)) + `</code></pre>
+`;
+  }
+  blockquote({ tokens: e }) {
+    return `<blockquote>
+${this.parser.parse(e)}</blockquote>
+`;
+  }
+  html({ text: e }) {
+    return e;
+  }
+  def(e) {
+    return "";
+  }
+  heading({ tokens: e, depth: t }) {
+    return `<h${t}>${this.parser.parseInline(e)}</h${t}>
+`;
+  }
+  hr(e) {
+    return `<hr>
+`;
+  }
+  list(e) {
+    let t = e.ordered, n = e.start, s = "";
+    for (let o = 0; o < e.items.length; o++) {
+      let u = e.items[o];
+      s += this.listitem(u);
+    }
+    let r = t ? "ol" : "ul", i = t && n !== 1 ? ' start="' + n + '"' : "";
+    return "<" + r + i + `>
+` + s + "</" + r + `>
+`;
+  }
+  listitem(e) {
+    return `<li>${this.parser.parse(e.tokens)}</li>
+`;
+  }
+  checkbox({ checked: e }) {
+    return "<input " + (e ? 'checked="" ' : "") + 'disabled="" type="checkbox"> ';
+  }
+  paragraph({ tokens: e }) {
+    return `<p>${this.parser.parseInline(e)}</p>
+`;
+  }
+  table(e) {
+    let t = "", n = "";
+    for (let r = 0; r < e.header.length; r++) n += this.tablecell(e.header[r]);
+    t += this.tablerow({ text: n });
+    let s = "";
+    for (let r = 0; r < e.rows.length; r++) {
+      let i = e.rows[r];
+      n = "";
+      for (let o = 0; o < i.length; o++) n += this.tablecell(i[o]);
+      s += this.tablerow({ text: n });
+    }
+    return s && (s = `<tbody>${s}</tbody>`), `<table>
+<thead>
+` + t + `</thead>
+` + s + `</table>
+`;
+  }
+  tablerow({ text: e }) {
+    return `<tr>
+${e}</tr>
+`;
+  }
+  tablecell(e) {
+    let t = this.parser.parseInline(e.tokens), n = e.header ? "th" : "td";
+    return (e.align ? `<${n} align="${e.align}">` : `<${n}>`) + t + `</${n}>
+`;
+  }
+  strong({ tokens: e }) {
+    return `<strong>${this.parser.parseInline(e)}</strong>`;
+  }
+  em({ tokens: e }) {
+    return `<em>${this.parser.parseInline(e)}</em>`;
+  }
+  codespan({ text: e }) {
+    return `<code>${O(e, true)}</code>`;
+  }
+  br(e) {
+    return "<br>";
+  }
+  del({ tokens: e }) {
+    return `<del>${this.parser.parseInline(e)}</del>`;
+  }
+  link({ href: e, title: t, tokens: n }) {
+    let s = this.parser.parseInline(n), r = J(e);
+    if (r === null) return s;
+    e = r;
+    let i = '<a href="' + e + '"';
+    return t && (i += ' title="' + O(t) + '"'), i += ">" + s + "</a>", i;
+  }
+  image({ href: e, title: t, text: n, tokens: s }) {
+    s && (n = this.parser.parseInline(s, this.parser.textRenderer));
+    let r = J(e);
+    if (r === null) return O(n);
+    e = r;
+    let i = `<img src="${e}" alt="${O(n)}"`;
+    return t && (i += ` title="${O(t)}"`), i += ">", i;
+  }
+  text(e) {
+    return "tokens" in e && e.tokens ? this.parser.parseInline(e.tokens) : "escaped" in e && e.escaped ? e.text : O(e.text);
+  }
+};
+var L = class {
+  strong({ text: e }) {
+    return e;
+  }
+  em({ text: e }) {
+    return e;
+  }
+  codespan({ text: e }) {
+    return e;
+  }
+  del({ text: e }) {
+    return e;
+  }
+  html({ text: e }) {
+    return e;
+  }
+  text({ text: e }) {
+    return e;
+  }
+  link({ text: e }) {
+    return "" + e;
+  }
+  image({ text: e }) {
+    return "" + e;
+  }
+  br() {
+    return "";
+  }
+  checkbox({ raw: e }) {
+    return e;
+  }
+};
+var b = class l2 {
+  constructor(e) {
+    __publicField(this, "options");
+    __publicField(this, "renderer");
+    __publicField(this, "textRenderer");
+    this.options = e || T, this.options.renderer = this.options.renderer || new y(), this.renderer = this.options.renderer, this.renderer.options = this.options, this.renderer.parser = this, this.textRenderer = new L();
+  }
+  static parse(e, t) {
+    return new l2(t).parse(e);
+  }
+  static parseInline(e, t) {
+    return new l2(t).parseInline(e);
+  }
+  parse(e) {
+    this.renderer.parser = this;
+    let t = "";
+    for (let n = 0; n < e.length; n++) {
+      let s = e[n];
+      if (this.options.extensions?.renderers?.[s.type]) {
+        let i = s, o = this.options.extensions.renderers[i.type].call({ parser: this }, i);
+        if (o !== false || !["space", "hr", "heading", "code", "table", "blockquote", "list", "html", "def", "paragraph", "text"].includes(i.type)) {
+          t += o || "";
+          continue;
+        }
+      }
+      let r = s;
+      switch (r.type) {
+        case "space": {
+          t += this.renderer.space(r);
+          break;
+        }
+        case "hr": {
+          t += this.renderer.hr(r);
+          break;
+        }
+        case "heading": {
+          t += this.renderer.heading(r);
+          break;
+        }
+        case "code": {
+          t += this.renderer.code(r);
+          break;
+        }
+        case "table": {
+          t += this.renderer.table(r);
+          break;
+        }
+        case "blockquote": {
+          t += this.renderer.blockquote(r);
+          break;
+        }
+        case "list": {
+          t += this.renderer.list(r);
+          break;
+        }
+        case "checkbox": {
+          t += this.renderer.checkbox(r);
+          break;
+        }
+        case "html": {
+          t += this.renderer.html(r);
+          break;
+        }
+        case "def": {
+          t += this.renderer.def(r);
+          break;
+        }
+        case "paragraph": {
+          t += this.renderer.paragraph(r);
+          break;
+        }
+        case "text": {
+          t += this.renderer.text(r);
+          break;
+        }
+        default: {
+          let i = 'Token with "' + r.type + '" type was not found.';
+          if (this.options.silent) return console.error(i), "";
+          throw new Error(i);
+        }
+      }
+    }
+    return t;
+  }
+  parseInline(e, t = this.renderer) {
+    this.renderer.parser = this;
+    let n = "";
+    for (let s = 0; s < e.length; s++) {
+      let r = e[s];
+      if (this.options.extensions?.renderers?.[r.type]) {
+        let o = this.options.extensions.renderers[r.type].call({ parser: this }, r);
+        if (o !== false || !["escape", "html", "link", "image", "strong", "em", "codespan", "br", "del", "text"].includes(r.type)) {
+          n += o || "";
+          continue;
+        }
+      }
+      let i = r;
+      switch (i.type) {
+        case "escape": {
+          n += t.text(i);
+          break;
+        }
+        case "html": {
+          n += t.html(i);
+          break;
+        }
+        case "link": {
+          n += t.link(i);
+          break;
+        }
+        case "image": {
+          n += t.image(i);
+          break;
+        }
+        case "checkbox": {
+          n += t.checkbox(i);
+          break;
+        }
+        case "strong": {
+          n += t.strong(i);
+          break;
+        }
+        case "em": {
+          n += t.em(i);
+          break;
+        }
+        case "codespan": {
+          n += t.codespan(i);
+          break;
+        }
+        case "br": {
+          n += t.br(i);
+          break;
+        }
+        case "del": {
+          n += t.del(i);
+          break;
+        }
+        case "text": {
+          n += t.text(i);
+          break;
+        }
+        default: {
+          let o = 'Token with "' + i.type + '" type was not found.';
+          if (this.options.silent) return console.error(o), "";
+          throw new Error(o);
+        }
+      }
+    }
+    return n;
+  }
+};
+var _a;
+var P = (_a = class {
+  constructor(e) {
+    __publicField(this, "options");
+    __publicField(this, "block");
+    this.options = e || T;
+  }
+  preprocess(e) {
+    return e;
+  }
+  postprocess(e) {
+    return e;
+  }
+  processAllTokens(e) {
+    return e;
+  }
+  emStrongMask(e) {
+    return e;
+  }
+  provideLexer(e = this.block) {
+    return e ? x.lex : x.lexInline;
+  }
+  provideParser(e = this.block) {
+    return e ? b.parse : b.parseInline;
+  }
+}, __publicField(_a, "passThroughHooks", /* @__PURE__ */ new Set(["preprocess", "postprocess", "processAllTokens", "emStrongMask"])), __publicField(_a, "passThroughHooksRespectAsync", /* @__PURE__ */ new Set(["preprocess", "postprocess", "processAllTokens"])), _a);
+var D = class {
+  constructor(...e) {
+    __publicField(this, "defaults", z());
+    __publicField(this, "options", this.setOptions);
+    __publicField(this, "parse", this.parseMarkdown(true));
+    __publicField(this, "parseInline", this.parseMarkdown(false));
+    __publicField(this, "Parser", b);
+    __publicField(this, "Renderer", y);
+    __publicField(this, "TextRenderer", L);
+    __publicField(this, "Lexer", x);
+    __publicField(this, "Tokenizer", w);
+    __publicField(this, "Hooks", P);
+    this.use(...e);
+  }
+  walkTokens(e, t) {
+    let n = [];
+    for (let s of e) switch (n = n.concat(t.call(this, s)), s.type) {
+      case "table": {
+        let r = s;
+        for (let i of r.header) n = n.concat(this.walkTokens(i.tokens, t));
+        for (let i of r.rows) for (let o of i) n = n.concat(this.walkTokens(o.tokens, t));
+        break;
+      }
+      case "list": {
+        let r = s;
+        n = n.concat(this.walkTokens(r.items, t));
+        break;
+      }
+      default: {
+        let r = s;
+        this.defaults.extensions?.childTokens?.[r.type] ? this.defaults.extensions.childTokens[r.type].forEach((i) => {
+          let o = r[i].flat(1 / 0);
+          n = n.concat(this.walkTokens(o, t));
+        }) : r.tokens && (n = n.concat(this.walkTokens(r.tokens, t)));
+      }
+    }
+    return n;
+  }
+  use(...e) {
+    let t = this.defaults.extensions || { renderers: {}, childTokens: {} };
+    return e.forEach((n) => {
+      let s = { ...n };
+      if (s.async = this.defaults.async || s.async || false, n.extensions && (n.extensions.forEach((r) => {
+        if (!r.name) throw new Error("extension name required");
+        if ("renderer" in r) {
+          let i = t.renderers[r.name];
+          i ? t.renderers[r.name] = function(...o) {
+            let u = r.renderer.apply(this, o);
+            return u === false && (u = i.apply(this, o)), u;
+          } : t.renderers[r.name] = r.renderer;
+        }
+        if ("tokenizer" in r) {
+          if (!r.level || r.level !== "block" && r.level !== "inline") throw new Error("extension level must be 'block' or 'inline'");
+          let i = t[r.level];
+          i ? i.unshift(r.tokenizer) : t[r.level] = [r.tokenizer], r.start && (r.level === "block" ? t.startBlock ? t.startBlock.push(r.start) : t.startBlock = [r.start] : r.level === "inline" && (t.startInline ? t.startInline.push(r.start) : t.startInline = [r.start]));
+        }
+        "childTokens" in r && r.childTokens && (t.childTokens[r.name] = r.childTokens);
+      }), s.extensions = t), n.renderer) {
+        let r = this.defaults.renderer || new y(this.defaults);
+        for (let i in n.renderer) {
+          if (!(i in r)) throw new Error(`renderer '${i}' does not exist`);
+          if (["options", "parser"].includes(i)) continue;
+          let o = i, u = n.renderer[o], a = r[o];
+          r[o] = (...c) => {
+            let p = u.apply(r, c);
+            return p === false && (p = a.apply(r, c)), p || "";
+          };
+        }
+        s.renderer = r;
+      }
+      if (n.tokenizer) {
+        let r = this.defaults.tokenizer || new w(this.defaults);
+        for (let i in n.tokenizer) {
+          if (!(i in r)) throw new Error(`tokenizer '${i}' does not exist`);
+          if (["options", "rules", "lexer"].includes(i)) continue;
+          let o = i, u = n.tokenizer[o], a = r[o];
+          r[o] = (...c) => {
+            let p = u.apply(r, c);
+            return p === false && (p = a.apply(r, c)), p;
+          };
+        }
+        s.tokenizer = r;
+      }
+      if (n.hooks) {
+        let r = this.defaults.hooks || new P();
+        for (let i in n.hooks) {
+          if (!(i in r)) throw new Error(`hook '${i}' does not exist`);
+          if (["options", "block"].includes(i)) continue;
+          let o = i, u = n.hooks[o], a = r[o];
+          P.passThroughHooks.has(i) ? r[o] = (c) => {
+            if (this.defaults.async && P.passThroughHooksRespectAsync.has(i)) return (async () => {
+              let d = await u.call(r, c);
+              return a.call(r, d);
+            })();
+            let p = u.call(r, c);
+            return a.call(r, p);
+          } : r[o] = (...c) => {
+            if (this.defaults.async) return (async () => {
+              let d = await u.apply(r, c);
+              return d === false && (d = await a.apply(r, c)), d;
+            })();
+            let p = u.apply(r, c);
+            return p === false && (p = a.apply(r, c)), p;
+          };
+        }
+        s.hooks = r;
+      }
+      if (n.walkTokens) {
+        let r = this.defaults.walkTokens, i = n.walkTokens;
+        s.walkTokens = function(o) {
+          let u = [];
+          return u.push(i.call(this, o)), r && (u = u.concat(r.call(this, o))), u;
+        };
+      }
+      this.defaults = { ...this.defaults, ...s };
+    }), this;
+  }
+  setOptions(e) {
+    return this.defaults = { ...this.defaults, ...e }, this;
+  }
+  lexer(e, t) {
+    return x.lex(e, t ?? this.defaults);
+  }
+  parser(e, t) {
+    return b.parse(e, t ?? this.defaults);
+  }
+  parseMarkdown(e) {
+    return (n, s) => {
+      let r = { ...s }, i = { ...this.defaults, ...r }, o = this.onError(!!i.silent, !!i.async);
+      if (this.defaults.async === true && r.async === false) return o(new Error("marked(): The async option was set to true by an extension. Remove async: false from the parse options object to return a Promise."));
+      if (typeof n > "u" || n === null) return o(new Error("marked(): input parameter is undefined or null"));
+      if (typeof n != "string") return o(new Error("marked(): input parameter is of type " + Object.prototype.toString.call(n) + ", string expected"));
+      if (i.hooks && (i.hooks.options = i, i.hooks.block = e), i.async) return (async () => {
+        let u = i.hooks ? await i.hooks.preprocess(n) : n, c = await (i.hooks ? await i.hooks.provideLexer(e) : e ? x.lex : x.lexInline)(u, i), p = i.hooks ? await i.hooks.processAllTokens(c) : c;
+        i.walkTokens && await Promise.all(this.walkTokens(p, i.walkTokens));
+        let h = await (i.hooks ? await i.hooks.provideParser(e) : e ? b.parse : b.parseInline)(p, i);
+        return i.hooks ? await i.hooks.postprocess(h) : h;
+      })().catch(o);
+      try {
+        i.hooks && (n = i.hooks.preprocess(n));
+        let a = (i.hooks ? i.hooks.provideLexer(e) : e ? x.lex : x.lexInline)(n, i);
+        i.hooks && (a = i.hooks.processAllTokens(a)), i.walkTokens && this.walkTokens(a, i.walkTokens);
+        let p = (i.hooks ? i.hooks.provideParser(e) : e ? b.parse : b.parseInline)(a, i);
+        return i.hooks && (p = i.hooks.postprocess(p)), p;
+      } catch (u) {
+        return o(u);
+      }
+    };
+  }
+  onError(e, t) {
+    return (n) => {
+      if (n.message += `
+Please report this to https://github.com/markedjs/marked.`, e) {
+        let s = "<p>An error occurred:</p><pre>" + O(n.message + "", true) + "</pre>";
+        return t ? Promise.resolve(s) : s;
+      }
+      if (t) return Promise.reject(n);
+      throw n;
+    };
+  }
+};
+var M = new D();
+function g(l3, e) {
+  return M.parse(l3, e);
+}
+g.options = g.setOptions = function(l3) {
+  return M.setOptions(l3), g.defaults = M.defaults, G(g.defaults), g;
+};
+g.getDefaults = z;
+g.defaults = T;
+g.use = function(...l3) {
+  return M.use(...l3), g.defaults = M.defaults, G(g.defaults), g;
+};
+g.walkTokens = function(l3, e) {
+  return M.walkTokens(l3, e);
+};
+g.parseInline = M.parseInline;
+g.Parser = b;
+g.parser = b.parse;
+g.Renderer = y;
+g.TextRenderer = L;
+g.Lexer = x;
+g.lexer = x.lex;
+g.Tokenizer = w;
+g.Hooks = P;
+g.parse = g;
+var jt = g.options;
+var Ft = g.setOptions;
+var Ut = g.use;
+var Kt = g.walkTokens;
+var Wt = g.parseInline;
+var Jt = b.parse;
+var Vt = x.lex;
+
+// src/services/markdown-renderer.ts
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
+}
+function isAbsoluteUrl(href) {
+  return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href);
+}
+function renderMarkdown(source) {
+  const warnings = [];
+  const wikiLinkPattern = /!?\[\[[^\]]+\]\]/g;
+  const preprocessed = source.replace(wikiLinkPattern, (match) => {
+    warnings.push(
+      `Obsidian wiki-link ${match} is not supported by the static-site publisher and was removed.`
+    );
+    return "";
+  });
+  const marked = new D({
+    gfm: true,
+    breaks: false,
+    pedantic: false
+  });
+  marked.use({
+    renderer: {
+      heading({ tokens, depth }) {
+        const text = this.parser.parseInline(tokens);
+        return `<h${depth}>${text}</h${depth}>
+`;
+      },
+      paragraph({ tokens }) {
+        const text = this.parser.parseInline(tokens);
+        return `<p>${text}</p>
+`;
+      },
+      link({ href, title, tokens }) {
+        const inner = this.parser.parseInline(tokens);
+        const safeHref = isAbsoluteUrl(href) || href.startsWith("/") || href.startsWith("#") || href.startsWith("mailto:") ? href : href;
+        const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<a href="${escapeHtml(safeHref)}"${titleAttr}>${inner}</a>`;
+      },
+      image({ href, title, text }) {
+        const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}"${titleAttr} />`;
+      },
+      codespan({ text }) {
+        return `<code>${escapeHtml(text)}</code>`;
+      },
+      code({ text, lang }) {
+        const body = escapeHtml(text);
+        if (lang) {
+          return `<pre><code class="language-${escapeHtml(lang)}">${body}
+</code></pre>
+`;
+        }
+        return `<pre><code>${body}
+</code></pre>
+`;
+      },
+      blockquote({ tokens }) {
+        const body = this.parser.parse(tokens);
+        return `<blockquote>
+${body}</blockquote>
+`;
+      },
+      hr() {
+        return "<hr />\n";
+      }
+    }
+  });
+  const rendered = marked.parse(preprocessed);
+  if (typeof rendered !== "string") {
+    throw new Error(
+      "Markdown renderer returned a promise. The plugin expects synchronous rendering."
+    );
+  }
+  return {
+    html: rendered.trim(),
+    warnings
+  };
+}
+
+// src/utils/date-format.ts
+function pad22(value) {
+  return String(value).padStart(2, "0");
+}
+var MONTH_NAMES = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec"
+];
+function parsePostDate(input) {
+  if (!input) {
+    return null;
+  }
+  if (input instanceof Date) {
+    if (Number.isNaN(input.getTime())) {
+      return null;
+    }
+    return { date: input, hasTime: true };
+  }
+  const trimmed = input.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(trimmed);
+  if (dateOnly) {
+    const [year, month, day] = trimmed.split("-").map((segment) => Number.parseInt(segment, 10));
+    const date = new Date(Date.UTC(year, month - 1, day, 0, 0, 0));
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+    return { date, hasTime: false };
+  }
+  const candidate = new Date(trimmed);
+  if (Number.isNaN(candidate.getTime())) {
+    return null;
+  }
+  return { date: candidate, hasTime: true };
+}
+function formatIsoMinutesZ(date) {
+  const year = date.getUTCFullYear();
+  const month = pad22(date.getUTCMonth() + 1);
+  const day = pad22(date.getUTCDate());
+  const hours = pad22(date.getUTCHours());
+  const minutes = pad22(date.getUTCMinutes());
+  return `${year}-${month}-${day}T${hours}:${minutes}Z`;
+}
+function formatDisplayDate(date) {
+  const month = MONTH_NAMES[date.getUTCMonth()];
+  const day = pad22(date.getUTCDate());
+  const year = date.getUTCFullYear();
+  return `${month} ${day}, ${year}`;
+}
+
+// src/services/static-site-renderer.ts
+var TemplateRenderError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "TemplateRenderError";
+  }
+};
+function escapeHtml2(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
+}
+function replaceAll(source, token, replacement) {
+  if (!token) {
+    return source;
+  }
+  return source.split(token).join(replacement);
+}
+function requireToken(tokens, key) {
+  const value = tokens[key];
+  if (!value) {
+    throw new TemplateRenderError(`Host token map is missing '${key}'.`);
+  }
+  return value;
+}
+function renderPost(input) {
+  const { host, templateText } = input;
+  if (!templateText) {
+    throw new TemplateRenderError("Template text is empty.");
+  }
+  const parsedDate = parsePostDate(input.date);
+  if (!parsedDate) {
+    throw new TemplateRenderError(
+      `Could not parse date '${input.date}'. Use YYYY-MM-DD or YYYY-MM-DDTHH:MMZ.`
+    );
+  }
+  const dateIso = formatIsoMinutesZ(parsedDate.date);
+  const dateDisplay = formatDisplayDate(parsedDate.date);
+  const titleToken = requireToken(host.tokens, "title");
+  const slugToken = requireToken(host.tokens, "slug");
+  const descriptionToken = requireToken(host.tokens, "description");
+  const dateIsoToken = requireToken(host.tokens, "dateIso");
+  const dateDisplayToken = requireToken(host.tokens, "dateDisplay");
+  if (!host.contentMarker) {
+    throw new TemplateRenderError("Host contentMarker is empty.");
+  }
+  if (!templateText.includes(host.contentMarker)) {
+    throw new TemplateRenderError(
+      `Template does not contain contentMarker '${host.contentMarker}'. The marker is the placeholder HTML the plugin replaces with your rendered body.`
+    );
+  }
+  let output = templateText;
+  output = replaceAll(output, dateIsoToken, dateIso);
+  output = replaceAll(output, dateDisplayToken, dateDisplay);
+  output = replaceAll(output, titleToken, escapeHtml2(input.title));
+  output = replaceAll(output, slugToken, input.slug);
+  output = replaceAll(output, descriptionToken, escapeHtml2(input.description));
+  output = replaceAll(output, host.contentMarker, input.bodyHtml);
+  return {
+    html: output,
+    dateIso,
+    dateDisplay
+  };
+}
+function resolvePostRelativePath(host, slug) {
+  const template = host.postPathTemplate || "{slug}/index.html";
+  const replaced = template.replace(/\{slug\}/g, slug);
+  if (replaced.includes("..")) {
+    throw new TemplateRenderError(
+      `Resolved post path '${replaced}' contains '..' which is not allowed.`
+    );
+  }
+  return replaced;
+}
+
+// src/services/static-site-publisher.ts
+var StaticSitePublishError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "StaticSitePublishError";
+  }
+};
+function joinRelativePosix(...segments) {
+  return segments.map((segment) => segment.replace(/^\/+|\/+$/g, "")).filter((segment) => segment.length > 0).join("/");
+}
+async function pathExists(targetPath) {
+  try {
+    await import_promises2.default.stat(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function readFileIfExists(targetPath) {
+  try {
+    return await import_promises2.default.readFile(targetPath, "utf8");
+  } catch (error) {
+    const code = error.code;
+    if (code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+async function writeFileAtomic(targetPath, content) {
+  const directory = import_node_path3.default.dirname(targetPath);
+  await import_promises2.default.mkdir(directory, { recursive: true });
+  const tempPath = `${targetPath}.tmp-${Date.now()}`;
+  await import_promises2.default.writeFile(tempPath, content, "utf8");
+  await import_promises2.default.rename(tempPath, targetPath);
+}
+async function removePostAndPruneParent(postAbsolutePath, postParentDir) {
+  const existed = await pathExists(postAbsolutePath);
+  if (existed) {
+    await import_promises2.default.rm(postAbsolutePath, { force: true });
+  }
+  try {
+    const remaining = await import_promises2.default.readdir(postParentDir);
+    if (remaining.length === 0) {
+      await import_promises2.default.rmdir(postParentDir);
+    }
+  } catch {
+  }
+  return existed;
+}
+var StaticSitePublisher = class {
+  constructor(gitService) {
+    this.gitService = gitService;
+  }
+  async ensurePrerequisites(host) {
+    if (!host.repoRoot) {
+      throw new StaticSitePublishError("Host has no repoRoot configured.");
+    }
+    if (!await pathExists(host.repoRoot)) {
+      throw new StaticSitePublishError(
+        `repoRoot does not exist: ${host.repoRoot}`
+      );
+    }
+    if (!await this.gitService.isGitWorktree(host.repoRoot)) {
+      throw new StaticSitePublishError(
+        `repoRoot is not a git worktree: ${host.repoRoot}`
+      );
+    }
+    const templatePath = import_node_path3.default.join(
+      host.repoRoot,
+      host.siteSubdir,
+      host.templateRelPath
+    );
+    if (!await pathExists(templatePath)) {
+      throw new StaticSitePublishError(
+        `Template not found at ${templatePath}. Check the host's site subdirectory and template path.`
+      );
+    }
+  }
+  async publish(input) {
+    const { host, frontmatter, markdownBody, vaultPath, previousRecord } = input;
+    await this.ensurePrerequisites(host);
+    const validation = validatePostFrontmatter(frontmatter);
+    if (!validation.ok) {
+      const details = validation.errors.map((error) => `${error.field}: ${error.message}`).join("; ");
+      throw new StaticSitePublishError(`Frontmatter invalid \u2014 ${details}`);
+    }
+    const post = validation.value;
+    const templatePath = import_node_path3.default.join(
+      host.repoRoot,
+      host.siteSubdir,
+      host.templateRelPath
+    );
+    const templateText = await import_promises2.default.readFile(templatePath, "utf8");
+    const { html: bodyHtml, warnings } = renderMarkdown(markdownBody);
+    let rendered;
+    try {
+      const result = renderPost({
+        host,
+        templateText,
+        title: post.title,
+        slug: post.slug,
+        description: post.description,
+        date: post.date,
+        bodyHtml
+      });
+      rendered = result.html;
+    } catch (error) {
+      if (error instanceof TemplateRenderError) {
+        throw new StaticSitePublishError(error.message);
+      }
+      throw error;
+    }
+    const postRelativePath = resolvePostRelativePath(host, post.slug);
+    const postRelativePathFromRepo = joinRelativePosix(
+      host.siteSubdir,
+      postRelativePath
+    );
+    const postAbsolutePath = import_node_path3.default.join(host.repoRoot, postRelativePathFromRepo);
+    const postParentDir = import_node_path3.default.dirname(postAbsolutePath);
+    const repoRelativeBefore = postRelativePathFromRepo;
+    const pathsToStage = [repoRelativeBefore];
+    let removedPreviousSlug = null;
+    if (previousRecord && previousRecord.slug && previousRecord.slug !== post.slug) {
+      const oldPostRelativePath = resolvePostRelativePath(
+        host,
+        previousRecord.slug
+      );
+      const oldRepoRelative = joinRelativePosix(
+        host.siteSubdir,
+        oldPostRelativePath
+      );
+      const oldAbsolute = import_node_path3.default.join(host.repoRoot, oldRepoRelative);
+      const oldParentDir = import_node_path3.default.dirname(oldAbsolute);
+      const deleted = await removePostAndPruneParent(oldAbsolute, oldParentDir);
+      if (deleted) {
+        removedPreviousSlug = previousRecord.slug;
+        pathsToStage.push(oldRepoRelative);
+      }
+    }
+    const existingContent = await readFileIfExists(postAbsolutePath);
+    const unchanged = existingContent === rendered && removedPreviousSlug === null;
+    if (!unchanged) {
+      await writeFileAtomic(postAbsolutePath, rendered);
+    }
+    await this.gitService.stagePathsInRepo(host.repoRoot, pathsToStage);
+    const stagedFiles = await this.gitService.getStagedFilesFiltered(
+      host.repoRoot,
+      pathsToStage
+    );
+    const branch = host.branch ?? await this.gitService.getCurrentBranch(host.repoRoot) ?? "";
+    if (!branch) {
+      throw new StaticSitePublishError(
+        "Could not resolve current branch for push. Is HEAD detached?"
+      );
+    }
+    const publicUrl = host.publicBaseUrl ? `${host.publicBaseUrl.replace(/\/+$/, "")}/${post.slug}/` : null;
+    if (stagedFiles.length === 0) {
+      return {
+        status: "unchanged",
+        slug: post.slug,
+        postAbsolutePath,
+        postRelativePath,
+        postRelativePathFromRepo,
+        removedPreviousSlug,
+        commitSha: await this.gitService.getHeadSha(host.repoRoot),
+        warnings,
+        publicUrl,
+        branch
+      };
+    }
+    const message = this.renderCommitMessage(host.commitMessagePublish, {
+      slug: post.slug,
+      title: post.title,
+      vaultPath
+    });
+    try {
+      await this.gitService.commitInRepo(host.repoRoot, message);
+    } catch (error) {
+      const commandError = error instanceof GitCommandError ? error : new GitCommandError({
+        command: "git",
+        args: ["commit"],
+        cwd: host.repoRoot,
+        message: error.message
+      });
+      const output = `${commandError.stderr}
+${commandError.stdout}`.toLowerCase();
+      if (!output.includes("nothing to commit")) {
+        throw new StaticSitePublishError(
+          `git commit failed: ${commandError.displayMessage()}`
+        );
+      }
+    }
+    try {
+      await this.gitService.pushCurrentBranchInRepo(
+        host.repoRoot,
+        host.remote,
+        host.branch
+      );
+    } catch (error) {
+      const commandError = error instanceof GitCommandError ? error : new GitCommandError({
+        command: "git",
+        args: ["push"],
+        cwd: host.repoRoot,
+        message: error.message
+      });
+      throw new StaticSitePublishError(
+        `git push failed: ${commandError.displayMessage()}. If this is a non-fast-forward error, run 'git pull --rebase' in ${host.repoRoot} and retry.`
+      );
+    }
+    return {
+      status: "published",
+      slug: post.slug,
+      postAbsolutePath,
+      postRelativePath,
+      postRelativePathFromRepo,
+      removedPreviousSlug,
+      commitSha: await this.gitService.getHeadSha(host.repoRoot),
+      warnings,
+      publicUrl,
+      branch
+    };
+  }
+  async unpublish(input) {
+    const { host, record } = input;
+    await this.ensurePrerequisites(host);
+    const postRelativePath = resolvePostRelativePath(host, record.slug);
+    const postRelativePathFromRepo = joinRelativePosix(
+      host.siteSubdir,
+      postRelativePath
+    );
+    const postAbsolutePath = import_node_path3.default.join(host.repoRoot, postRelativePathFromRepo);
+    const postParentDir = import_node_path3.default.dirname(postAbsolutePath);
+    const existed = await removePostAndPruneParent(
+      postAbsolutePath,
+      postParentDir
+    );
+    const branch = host.branch ?? await this.gitService.getCurrentBranch(host.repoRoot) ?? "";
+    if (!branch) {
+      throw new StaticSitePublishError(
+        "Could not resolve current branch for push. Is HEAD detached?"
+      );
+    }
+    if (!existed) {
+      return {
+        status: "not_found",
+        removedPath: postRelativePathFromRepo,
+        commitSha: await this.gitService.getHeadSha(host.repoRoot),
+        branch
+      };
+    }
+    await this.gitService.stagePathsInRepo(host.repoRoot, [
+      postRelativePathFromRepo
+    ]);
+    const stagedFiles = await this.gitService.getStagedFilesFiltered(
+      host.repoRoot,
+      [postRelativePathFromRepo]
+    );
+    if (stagedFiles.length > 0) {
+      const message = this.renderCommitMessage(host.commitMessageUnpublish, {
+        slug: record.slug,
+        title: record.slug,
+        vaultPath: record.vaultPath
+      });
+      try {
+        await this.gitService.commitInRepo(host.repoRoot, message);
+      } catch (error) {
+        const commandError = error instanceof GitCommandError ? error : new GitCommandError({
+          command: "git",
+          args: ["commit"],
+          cwd: host.repoRoot,
+          message: error.message
+        });
+        const output = `${commandError.stderr}
+${commandError.stdout}`.toLowerCase();
+        if (!output.includes("nothing to commit")) {
+          throw new StaticSitePublishError(
+            `git commit failed: ${commandError.displayMessage()}`
+          );
+        }
+      }
+      try {
+        await this.gitService.pushCurrentBranchInRepo(
+          host.repoRoot,
+          host.remote,
+          host.branch
+        );
+      } catch (error) {
+        const commandError = error instanceof GitCommandError ? error : new GitCommandError({
+          command: "git",
+          args: ["push"],
+          cwd: host.repoRoot,
+          message: error.message
+        });
+        throw new StaticSitePublishError(
+          `git push failed: ${commandError.displayMessage()}`
+        );
+      }
+    }
+    return {
+      status: "unpublished",
+      removedPath: postRelativePathFromRepo,
+      commitSha: await this.gitService.getHeadSha(host.repoRoot),
+      branch
+    };
+  }
+  renderCommitMessage(template, values) {
+    const base = template && template.length > 0 ? template : "static-site: update {slug}";
+    return base.replace(/\{slug\}/g, values.slug).replace(/\{title\}/g, values.title).replace(/\{vaultPath\}/g, values.vaultPath);
+  }
+};
+
 // src/settings/vault-publisher-setting-tab.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian7 = require("obsidian");
+
+// src/modals/static-site-host-modal.ts
+var import_obsidian5 = require("obsidian");
+function generateHostId(name) {
+  const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const random = Math.random().toString(36).slice(2, 8);
+  return slug ? `${slug}-${random}` : `host-${random}`;
+}
+function cloneHost(host) {
+  return {
+    ...host,
+    tokens: { ...host.tokens }
+  };
+}
+var StaticSiteHostModal = class extends import_obsidian5.Modal {
+  constructor(app, initial) {
+    super(app);
+    this.didResolve = false;
+    this.isNew = initial === null;
+    this.working = initial ? cloneHost(initial) : {
+      id: "",
+      name: "",
+      repoRoot: "",
+      siteSubdir: "",
+      postPathTemplate: "{slug}/index.html",
+      templateRelPath: "_template.html",
+      contentMarker: "<p>Article content...</p>",
+      tokens: {
+        title: "POST_TITLE",
+        slug: "POST_SLUG",
+        description: "POST_DESCRIPTION",
+        dateIso: "YYYY-MM-DDTHH:MMZ",
+        dateDisplay: "Mon DD, YYYY"
+      },
+      commitMessagePublish: "static-site: publish {slug}",
+      commitMessageUnpublish: "static-site: unpublish {slug}",
+      remote: "origin",
+      branch: void 0,
+      publicBaseUrl: void 0
+    };
+  }
+  onOpen() {
+    this.titleEl.setText(
+      this.isNew ? "Add Static Site Host" : "Edit Static Site Host"
+    );
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("vault-publisher-settings");
+    contentEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: "Configure a static site host. The plugin writes rendered HTML into <repo root>/<site subdirectory>/<post path>, then commits and pushes only the files it wrote."
+    });
+    this.addTextSetting(contentEl, {
+      name: "Display name",
+      desc: "Shown in pickers and settings.",
+      placeholder: "APM Overflow",
+      value: this.working.name,
+      onChange: (value) => {
+        this.working.name = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Repo root (absolute path)",
+      desc: "Path to the git worktree root on disk.",
+      placeholder: "/Users/you/Documents/GitHub/your-site",
+      value: this.working.repoRoot,
+      onChange: (value) => {
+        this.working.repoRoot = value.trim();
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Site subdirectory",
+      desc: "Relative path from repo root where posts live. Leave empty if posts live at the root.",
+      placeholder: "apmoverflow",
+      value: this.working.siteSubdir,
+      onChange: (value) => {
+        this.working.siteSubdir = value.trim();
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Post path template",
+      desc: "Relative path inside the site subdirectory. Use {slug} for the post slug.",
+      placeholder: "{slug}/index.html",
+      value: this.working.postPathTemplate,
+      onChange: (value) => {
+        this.working.postPathTemplate = value.trim();
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Template file",
+      desc: "Relative path inside the site subdirectory to the HTML template.",
+      placeholder: "_template.html",
+      value: this.working.templateRelPath,
+      onChange: (value) => {
+        this.working.templateRelPath = value.trim();
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Content marker",
+      desc: "String in the template that will be replaced with the rendered Markdown body.",
+      placeholder: "<p>Article content...</p>",
+      value: this.working.contentMarker,
+      onChange: (value) => {
+        this.working.contentMarker = value;
+      }
+    });
+    contentEl.createEl("h4", { text: "Template tokens" });
+    contentEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: "Strings in your template that will be replaced on publish. Every occurrence of each token is substituted, so pick values that will not collide with real text."
+    });
+    this.addTextSetting(contentEl, {
+      name: "Title token",
+      desc: "Replaced with the post's frontmatter `title` (HTML-escaped).",
+      placeholder: "POST_TITLE",
+      value: this.working.tokens.title,
+      onChange: (value) => {
+        this.working.tokens.title = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Slug token",
+      desc: "Replaced with the post slug (used inside URLs).",
+      placeholder: "POST_SLUG",
+      value: this.working.tokens.slug,
+      onChange: (value) => {
+        this.working.tokens.slug = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Description token",
+      desc: "Replaced with the post description (HTML-escaped).",
+      placeholder: "POST_DESCRIPTION",
+      value: this.working.tokens.description,
+      onChange: (value) => {
+        this.working.tokens.description = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Date token (ISO)",
+      desc: "Replaced with ISO datetime like 2026-03-18T18:25Z.",
+      placeholder: "YYYY-MM-DDTHH:MMZ",
+      value: this.working.tokens.dateIso,
+      onChange: (value) => {
+        this.working.tokens.dateIso = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Date token (display)",
+      desc: "Replaced with human-readable date like Mar 18, 2026.",
+      placeholder: "Mon DD, YYYY",
+      value: this.working.tokens.dateDisplay,
+      onChange: (value) => {
+        this.working.tokens.dateDisplay = value;
+      }
+    });
+    contentEl.createEl("h4", { text: "Git" });
+    this.addTextSetting(contentEl, {
+      name: "Remote",
+      desc: "Git remote to push to.",
+      placeholder: "origin",
+      value: this.working.remote,
+      onChange: (value) => {
+        this.working.remote = value.trim() || "origin";
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Branch (optional)",
+      desc: "Leave empty to use the currently checked-out branch at publish time.",
+      placeholder: "main",
+      value: this.working.branch ?? "",
+      onChange: (value) => {
+        this.working.branch = value.trim() || void 0;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Publish commit message template",
+      desc: "Use {slug}, {title}, or {vaultPath} as placeholders.",
+      placeholder: "apmoverflow: publish {slug}",
+      value: this.working.commitMessagePublish,
+      onChange: (value) => {
+        this.working.commitMessagePublish = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Unpublish commit message template",
+      desc: "Same placeholders as publish.",
+      placeholder: "apmoverflow: unpublish {slug}",
+      value: this.working.commitMessageUnpublish,
+      onChange: (value) => {
+        this.working.commitMessageUnpublish = value;
+      }
+    });
+    this.addTextSetting(contentEl, {
+      name: "Public base URL (optional)",
+      desc: "If set, the plugin will show a clickable URL after publish. e.g. https://apmoverflow.xyz",
+      placeholder: "https://yoursite.example",
+      value: this.working.publicBaseUrl ?? "",
+      onChange: (value) => {
+        this.working.publicBaseUrl = value.trim() || void 0;
+      }
+    });
+    new import_obsidian5.Setting(contentEl).addButton((button) => {
+      button.setButtonText("Cancel").onClick(() => {
+        this.finish(null);
+      });
+    }).addButton((button) => {
+      button.setCta().setButtonText(this.isNew ? "Add host" : "Save").onClick(() => {
+        const validationError = this.validate();
+        if (validationError) {
+          new import_obsidian5.Notice(validationError, 8e3);
+          return;
+        }
+        if (!this.working.id) {
+          this.working.id = generateHostId(this.working.name);
+        }
+        this.finish({ host: cloneHost(this.working) });
+      });
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.didResolve) {
+      this.resolveResult?.(null);
+    }
+  }
+  openAndGetValue() {
+    return new Promise((resolve) => {
+      this.resolveResult = resolve;
+      this.open();
+    });
+  }
+  finish(value) {
+    this.didResolve = true;
+    this.resolveResult?.(value);
+    this.close();
+  }
+  addTextSetting(containerEl, options) {
+    new import_obsidian5.Setting(containerEl).setName(options.name).setDesc(options.desc).addText((text) => {
+      text.setPlaceholder(options.placeholder);
+      text.setValue(options.value);
+      text.onChange((value) => {
+        options.onChange(value);
+      });
+      text.inputEl.style.width = "100%";
+    });
+  }
+  validate() {
+    if (!this.working.name.trim()) {
+      return "Display name is required.";
+    }
+    if (!this.working.repoRoot.trim()) {
+      return "Repo root is required.";
+    }
+    if (!this.working.postPathTemplate.includes("{slug}")) {
+      return "Post path template must include {slug}.";
+    }
+    if (!this.working.templateRelPath.trim()) {
+      return "Template file path is required.";
+    }
+    if (!this.working.contentMarker.trim()) {
+      return "Content marker is required.";
+    }
+    if (!this.working.tokens.title.trim()) {
+      return "Title token is required.";
+    }
+    if (!this.working.tokens.slug.trim()) {
+      return "Slug token is required.";
+    }
+    if (!this.working.tokens.description.trim()) {
+      return "Description token is required.";
+    }
+    if (!this.working.tokens.dateIso.trim()) {
+      return "Date token (ISO) is required.";
+    }
+    if (!this.working.tokens.dateDisplay.trim()) {
+      return "Date token (display) is required.";
+    }
+    if (!this.working.remote.trim()) {
+      return "Remote is required (e.g. origin).";
+    }
+    return null;
+  }
+};
 
 // src/modals/unpublish-confirm-modal.ts
-var import_obsidian3 = require("obsidian");
-var UnpublishConfirmModal = class extends import_obsidian3.Modal {
+var import_obsidian6 = require("obsidian");
+var UnpublishConfirmModal = class extends import_obsidian6.Modal {
   constructor(app, entry) {
     super(app);
     this.didResolve = false;
@@ -1260,7 +3750,7 @@ var UnpublishConfirmModal = class extends import_obsidian3.Modal {
     details.createEl("li", {
       text: this.getKeptContentLabel()
     });
-    new import_obsidian3.Setting(contentEl).addButton((button) => {
+    new import_obsidian6.Setting(contentEl).addButton((button) => {
       button.setButtonText("Cancel").onClick(() => {
         this.finish(false);
       });
@@ -1314,8 +3804,34 @@ var UnpublishConfirmModal = class extends import_obsidian3.Modal {
   }
 };
 
+// src/services/static-site-presets.ts
+var APM_OVERFLOW_HOST_ID = "apm-overflow";
+var APM_OVERFLOW_REPO_ROOT = "/Users/islamtayeb/Documents/GitHub/personal-website";
+function createApmOverflowPreset(repoRoot = APM_OVERFLOW_REPO_ROOT) {
+  return {
+    id: APM_OVERFLOW_HOST_ID,
+    name: "APM Overflow",
+    repoRoot,
+    siteSubdir: "apmoverflow",
+    postPathTemplate: "{slug}/index.html",
+    templateRelPath: "_template.html",
+    contentMarker: "<p>Article content...</p>",
+    tokens: {
+      title: "POST_TITLE",
+      slug: "POST_SLUG",
+      description: "POST_DESCRIPTION",
+      dateIso: "YYYY-MM-DDTHH:MMZ",
+      dateDisplay: "Mon DD, YYYY"
+    },
+    commitMessagePublish: "apmoverflow: publish {slug}",
+    commitMessageUnpublish: "apmoverflow: unpublish {slug}",
+    remote: "origin",
+    publicBaseUrl: "https://apmoverflow.xyz"
+  };
+}
+
 // src/settings/vault-publisher-setting-tab.ts
-var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
+var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.renderNonce = 0;
@@ -1348,31 +3864,38 @@ var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
           cls: "vault-publisher-empty",
           text: "No tracked or discovered repositories were found."
         });
-        return;
-      }
-      const groups = [
-        {
-          title: "Tracked Targets",
-          description: "Repositories the plugin explicitly tracks for directories and file mirrors.",
-          emptyText: "No tracked directory or file targets.",
-          entries: entries.filter((entry) => entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file")
-        },
-        {
-          title: "Scanned Repositories",
-          description: "Standalone Git repositories found by the existing vault scan.",
-          emptyText: "No standalone scanned repositories.",
-          entries: entries.filter((entry) => entry.sourceKind === "scanned-directory")
-        },
-        {
-          title: "Orphan Mirrors",
-          description: "Mirror repositories under the plugin mirror root that are no longer tied to a tracked file target.",
-          emptyText: "No orphan mirror repositories.",
-          entries: entries.filter((entry) => entry.sourceKind === "orphan-mirror")
+      } else {
+        const groups = [
+          {
+            title: "Tracked Targets",
+            description: "Repositories the plugin explicitly tracks for directories and file mirrors.",
+            emptyText: "No tracked directory or file targets.",
+            entries: entries.filter(
+              (entry) => entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file"
+            )
+          },
+          {
+            title: "Scanned Repositories",
+            description: "Standalone Git repositories found by the existing vault scan.",
+            emptyText: "No standalone scanned repositories.",
+            entries: entries.filter(
+              (entry) => entry.sourceKind === "scanned-directory"
+            )
+          },
+          {
+            title: "Orphan Mirrors",
+            description: "Mirror repositories under the plugin mirror root that are no longer tied to a tracked file target.",
+            emptyText: "No orphan mirror repositories.",
+            entries: entries.filter(
+              (entry) => entry.sourceKind === "orphan-mirror"
+            )
+          }
+        ];
+        for (const group of groups) {
+          this.renderGroup(containerEl, group);
         }
-      ];
-      for (const group of groups) {
-        this.renderGroup(containerEl, group);
       }
+      this.renderStaticSiteHostsSection(containerEl);
     } catch (error) {
       if (renderNonce !== this.renderNonce) {
         return;
@@ -1384,11 +3907,12 @@ var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
         cls: "vault-publisher-empty",
         text: this.formatError(error)
       });
+      this.renderStaticSiteHostsSection(containerEl);
     }
   }
   renderHeader(containerEl, totalCount) {
     const heading = totalCount === void 0 ? "Repository Management" : `Repository Management (${totalCount})`;
-    new import_obsidian4.Setting(containerEl).setName(heading).setDesc(
+    new import_obsidian7.Setting(containerEl).setName(heading).setDesc(
       "View tracked targets, scanned repos, and orphan mirrors. Unpublish deletes the GitHub repo and removes local Git state while keeping vault content."
     ).addButton((button) => {
       button.setButtonText("Refresh").onClick(() => {
@@ -1417,10 +3941,12 @@ var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
     }
   }
   renderEntry(containerEl, entry) {
-    const setting = new import_obsidian4.Setting(containerEl);
+    const setting = new import_obsidian7.Setting(containerEl);
     setting.settingEl.addClass("vault-publisher-entry");
     setting.nameEl.empty();
-    const titleEl = setting.nameEl.createDiv({ cls: "vault-publisher-entry-title" });
+    const titleEl = setting.nameEl.createDiv({
+      cls: "vault-publisher-entry-title"
+    });
     titleEl.createSpan({
       cls: "vault-publisher-entry-path",
       text: this.getEntryTitle(entry)
@@ -1433,7 +3959,9 @@ var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
     }
     setting.descEl.empty();
     for (const line of this.getEntryLines(entry)) {
-      const lineEl = setting.descEl.createDiv({ cls: "vault-publisher-entry-line" });
+      const lineEl = setting.descEl.createDiv({
+        cls: "vault-publisher-entry-line"
+      });
       lineEl.createSpan({
         cls: "vault-publisher-entry-label",
         text: `${line.label}: `
@@ -1456,13 +3984,177 @@ var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
     });
   }
   async handleUnpublish(entry, button) {
-    const confirmed = await new UnpublishConfirmModal(this.app, entry).openAndConfirm();
+    const confirmed = await new UnpublishConfirmModal(
+      this.app,
+      entry
+    ).openAndConfirm();
     if (!confirmed) {
       return;
     }
     button.setButtonText("Working...");
     button.setDisabled(true);
     await this.vaultPublisher.unpublishRepo(entry);
+    this.display();
+  }
+  renderStaticSiteHostsSection(containerEl) {
+    const sectionEl = containerEl.createDiv({ cls: "vault-publisher-section" });
+    const headerRow = sectionEl.createDiv({
+      cls: "vault-publisher-static-header"
+    });
+    headerRow.createEl("h3", {
+      text: "Static Site Hosts \u2014 Bring Your Own Host"
+    });
+    headerRow.createSpan({
+      cls: "vault-publisher-experimental-badge",
+      text: "EXPERIMENTAL"
+    });
+    const warning = sectionEl.createDiv({
+      cls: "vault-publisher-experimental-warning"
+    });
+    warning.createSpan({
+      text: "This feature is experimental. It writes into your local static-site repo and force-pushes a commit on the current branch \u2014 double-check your host config before publishing, and expect rough edges."
+    });
+    sectionEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: "Publish Markdown notes as HTML pages in any git-backed static site. The plugin renders Markdown through a host-provided HTML template, writes the file into your repo, and commits + pushes only that file. It does not touch blog indexes or feeds, so posts are unlisted and reachable only by direct URL."
+    });
+    const requirements = sectionEl.createEl("ul", {
+      cls: "vault-publisher-confirm-list"
+    });
+    requirements.createEl("li", {
+      text: "Your note needs YAML frontmatter with `title`, `slug`, `date`, `description`, and optionally `host: <host-id>`."
+    });
+    requirements.createEl("li", {
+      text: "Your template must contain the token strings (POST_TITLE, POST_SLUG, POST_DESCRIPTION, YYYY-MM-DDTHH:MMZ, Mon DD, YYYY) and a content marker (e.g. <p>Article content...</p>) that the plugin will replace."
+    });
+    requirements.createEl("li", {
+      text: "The repo root must be a git worktree; the plugin uses `git` on PATH to stage, commit, and push."
+    });
+    const hosts = this.vaultPublisher.getStaticSiteHosts();
+    this.renderPresetsRow(sectionEl, hosts);
+    if (hosts.length === 0) {
+      sectionEl.createDiv({
+        cls: "vault-publisher-empty",
+        text: "No static site hosts configured yet."
+      });
+    } else {
+      for (const host of hosts) {
+        this.renderHostEntry(sectionEl, host);
+      }
+    }
+    new import_obsidian7.Setting(sectionEl).setName("Add custom host").setDesc("Configure a new static site target from scratch.").addButton((button) => {
+      button.setButtonText("Add host").onClick(() => {
+        void this.handleAddHost();
+      });
+    });
+  }
+  renderPresetsRow(sectionEl, hosts) {
+    const hasApmOverflow = hosts.some(
+      (host) => host.id === APM_OVERFLOW_HOST_ID
+    );
+    if (hasApmOverflow) {
+      return;
+    }
+    const setting = new import_obsidian7.Setting(sectionEl).setName("APM Overflow preset").setDesc(
+      `Seed a host pointing at ${APM_OVERFLOW_REPO_ROOT}/apmoverflow using the existing _template.html. You can edit it afterwards.`
+    ).addButton((button) => {
+      button.setButtonText("Add APM Overflow preset").onClick(() => {
+        void this.handleAddPreset();
+      });
+    });
+    setting.settingEl.addClass("vault-publisher-entry");
+  }
+  async handleAddPreset() {
+    const preset = createApmOverflowPreset();
+    await this.vaultPublisher.upsertStaticSiteHost(preset);
+    new import_obsidian7.Notice(`Added preset: ${preset.name}.`);
+    this.display();
+  }
+  async handleAddHost() {
+    const modal = new StaticSiteHostModal(this.app, null);
+    const result = await modal.openAndGetValue();
+    if (!result) {
+      return;
+    }
+    await this.vaultPublisher.upsertStaticSiteHost(result.host);
+    new import_obsidian7.Notice(`Added host: ${result.host.name}.`);
+    this.display();
+  }
+  renderHostEntry(sectionEl, host) {
+    const setting = new import_obsidian7.Setting(sectionEl);
+    setting.settingEl.addClass("vault-publisher-entry");
+    setting.nameEl.empty();
+    const titleEl = setting.nameEl.createDiv({
+      cls: "vault-publisher-entry-title"
+    });
+    titleEl.createSpan({ cls: "vault-publisher-entry-path", text: host.name });
+    titleEl.createSpan({ cls: "vault-publisher-entry-badge", text: host.id });
+    setting.descEl.empty();
+    const lines = [
+      { label: "Repo root", value: host.repoRoot },
+      { label: "Site dir", value: host.siteSubdir || "(repo root)" },
+      { label: "Template", value: host.templateRelPath },
+      { label: "Post path", value: host.postPathTemplate },
+      { label: "Remote", value: host.remote }
+    ];
+    if (host.branch) {
+      lines.push({ label: "Branch", value: host.branch });
+    }
+    if (host.publicBaseUrl) {
+      lines.push({ label: "Public URL", value: host.publicBaseUrl });
+    }
+    const publishes = this.vaultPublisher.getConfigStore().getStaticSitePublishesByHost(host.id);
+    lines.push({ label: "Published notes", value: String(publishes.length) });
+    for (const line of lines) {
+      const lineEl = setting.descEl.createDiv({
+        cls: "vault-publisher-entry-line"
+      });
+      lineEl.createSpan({
+        cls: "vault-publisher-entry-label",
+        text: `${line.label}: `
+      });
+      lineEl.createSpan({ text: line.value });
+    }
+    setting.addButton((button) => {
+      button.setButtonText("Edit").onClick(() => {
+        void this.handleEditHost(host);
+      });
+    });
+    setting.addButton((button) => {
+      button.setButtonText("Delete");
+      button.buttonEl.addClass("mod-warning");
+      button.onClick(() => {
+        void this.handleDeleteHost(host);
+      });
+    });
+  }
+  async handleEditHost(host) {
+    const modal = new StaticSiteHostModal(this.app, host);
+    const result = await modal.openAndGetValue();
+    if (!result) {
+      return;
+    }
+    await this.vaultPublisher.upsertStaticSiteHost({
+      ...result.host,
+      id: host.id
+    });
+    new import_obsidian7.Notice(`Updated host: ${host.name}.`);
+    this.display();
+  }
+  async handleDeleteHost(host) {
+    const publishes = this.vaultPublisher.getConfigStore().getStaticSitePublishesByHost(host.id);
+    const suffix = publishes.length > 0 ? ` This will also forget ${publishes.length} published-note record(s), but will not delete files from the static site.` : "";
+    const confirmed = window.confirm(`Delete host '${host.name}'?${suffix}`);
+    if (!confirmed) {
+      return;
+    }
+    await this.vaultPublisher.removeStaticSiteHost(host.id);
+    const configStore = this.vaultPublisher.getConfigStore();
+    for (const publish of publishes) {
+      configStore.removeStaticSitePublish(host.id, publish.vaultPath);
+    }
+    await this.vaultPublisher.saveConfig();
+    new import_obsidian7.Notice(`Removed host: ${host.name}.`);
     this.display();
   }
   getEntryTitle(entry) {
@@ -1541,7 +4233,7 @@ var VaultPublisherSettingTab = class extends import_obsidian4.PluginSettingTab {
 };
 
 // src/plugin.ts
-var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
+var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   constructor() {
     super(...arguments);
     this.isRunning = false;
@@ -1550,6 +4242,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     this.configStore = new ConfigStore(this);
     await this.configStore.load();
     this.gitService = new GitService();
+    this.staticSitePublisher = new StaticSitePublisher(this.gitService);
     this.addSettingTab(new VaultPublisherSettingTab(this.app, this));
     this.addCommand({
       id: "publish-directory",
@@ -1578,18 +4271,36 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
         });
       }
     });
+    this.addCommand({
+      id: "publish-to-static-site",
+      name: "Publish Note to Static Site Host (Experimental)",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handlePublishToStaticSite();
+        });
+      }
+    });
+    this.addCommand({
+      id: "unpublish-from-static-site",
+      name: "Unpublish Note from Static Site Host (Experimental)",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handleUnpublishFromStaticSite();
+        });
+      }
+    });
   }
   async ensurePrerequisites() {
     const status = await this.gitService.checkPrerequisites();
     if (!status.ok) {
-      new import_obsidian5.Notice(status.message ?? "Missing required tools.", 12e3);
+      new import_obsidian8.Notice(status.message ?? "Missing required tools.", 12e3);
       return false;
     }
     return true;
   }
   async executeExclusive(action) {
     if (this.isRunning) {
-      new import_obsidian5.Notice("Vault Publisher is already running.");
+      new import_obsidian8.Notice("Vault Publisher is already running.");
       return;
     }
     this.isRunning = true;
@@ -1634,17 +4345,25 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
   }
   async performUnpublishRepo(entry) {
     if (!entry.canUnpublish || !entry.githubRepoSlug) {
-      new import_obsidian5.Notice(entry.disabledReason ?? "This repository cannot be unpublished.", 1e4);
+      new import_obsidian8.Notice(
+        entry.disabledReason ?? "This repository cannot be unpublished.",
+        1e4
+      );
       return false;
     }
     const githubStatus = await this.gitService.checkGitHubPrerequisites();
     if (!githubStatus.ok) {
-      new import_obsidian5.Notice(githubStatus.message ?? "Missing required GitHub tools.", 12e3);
+      new import_obsidian8.Notice(
+        githubStatus.message ?? "Missing required GitHub tools.",
+        12e3
+      );
       return false;
     }
     let remoteResult;
     try {
-      remoteResult = await this.gitService.deleteGitHubRepo(entry.githubRepoSlug);
+      remoteResult = await this.gitService.deleteGitHubRepo(
+        entry.githubRepoSlug
+      );
     } catch (error) {
       this.showCommandError(error);
       return false;
@@ -1662,12 +4381,15 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     } catch (error) {
       const detail = error instanceof GitCommandError ? error.displayMessage() : error instanceof Error ? error.message : "Unknown local cleanup failure.";
       const remoteMessage2 = remoteResult.status === "deleted" ? `Deleted GitHub repo ${entry.githubRepoSlug}` : `GitHub repo ${entry.githubRepoSlug} was already absent`;
-      new import_obsidian5.Notice(`${remoteMessage2}, but local cleanup failed: ${detail}`, 15e3);
+      new import_obsidian8.Notice(
+        `${remoteMessage2}, but local cleanup failed: ${detail}`,
+        15e3
+      );
       return false;
     }
     const targetLabel = entry.sourceKind === "tracked-file" ? `file ${entry.vaultPath}` : entry.sourceKind === "orphan-mirror" ? `mirror ${entry.localRepoVaultPath}` : `directory ${entry.vaultPath}`;
     const remoteMessage = remoteResult.status === "deleted" ? `Deleted GitHub repo ${entry.githubRepoSlug}` : `GitHub repo ${entry.githubRepoSlug} was already absent`;
-    new import_obsidian5.Notice(`Unpublished ${targetLabel}. ${remoteMessage}.`, 1e4);
+    new import_obsidian8.Notice(`Unpublished ${targetLabel}. ${remoteMessage}.`, 1e4);
     return true;
   }
   isSelectableDirectory(vaultPath) {
@@ -1726,14 +4448,14 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       if (!normalizedPath) {
         continue;
       }
-      if (item instanceof import_obsidian5.TFolder) {
+      if (item instanceof import_obsidian8.TFolder) {
         if (!this.isSelectableDirectory(normalizedPath)) {
           continue;
         }
         targets.push({ path: normalizedPath, kind: "directory" });
         continue;
       }
-      if (item instanceof import_obsidian5.TFile) {
+      if (item instanceof import_obsidian8.TFile) {
         if (!this.isSelectableFile(normalizedPath)) {
           continue;
         }
@@ -1758,7 +4480,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
   resolveTargetSelection(item) {
     const normalizedPath = normalizeVaultPath(item.path);
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (item.kind === "file" || abstractItem instanceof import_obsidian5.TFile) {
+    if (item.kind === "file" || abstractItem instanceof import_obsidian8.TFile) {
       return {
         targetType: "file",
         vaultPath: normalizedPath
@@ -1787,13 +4509,13 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       return null;
     }
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (abstractItem instanceof import_obsidian5.TFolder && this.isSelectableDirectory(normalizedPath)) {
+    if (abstractItem instanceof import_obsidian8.TFolder && this.isSelectableDirectory(normalizedPath)) {
       return {
         targetType: "directory",
         vaultPath: normalizedPath
       };
     }
-    if (abstractItem instanceof import_obsidian5.TFile && this.isSelectableFile(normalizedPath)) {
+    if (abstractItem instanceof import_obsidian8.TFile && this.isSelectableFile(normalizedPath)) {
       return {
         targetType: "file",
         vaultPath: normalizedPath
@@ -1803,12 +4525,15 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     if (!vaultBasePath) {
       return null;
     }
-    const absolutePath = absolutePathForVaultPath(vaultBasePath, normalizedPath);
+    const absolutePath = absolutePathForVaultPath(
+      vaultBasePath,
+      normalizedPath
+    );
     if (!ensureInsideVault(vaultBasePath, absolutePath)) {
       return null;
     }
     try {
-      const stats = await import_promises2.default.stat(absolutePath);
+      const stats = await import_promises3.default.stat(absolutePath);
       if (stats.isDirectory() && this.isSelectableDirectory(normalizedPath)) {
         return {
           targetType: "directory",
@@ -1843,7 +4568,10 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       }
       let entries;
       try {
-        entries = await import_promises2.default.readdir(absoluteDirectory, { withFileTypes: true, encoding: "utf8" });
+        entries = await import_promises3.default.readdir(absoluteDirectory, {
+          withFileTypes: true,
+          encoding: "utf8"
+        });
       } catch {
         return;
       }
@@ -1868,7 +4596,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
             }
             foundMatch = candidate;
           }
-          await walk(import_node_path3.default.join(absoluteDirectory, entry.name), relativePath);
+          await walk(import_node_path4.default.join(absoluteDirectory, entry.name), relativePath);
           continue;
         }
         if (entry.isFile() && entry.name === normalizedQuery && this.isSelectableFile(normalizedPath)) {
@@ -1901,7 +4629,9 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     }
     const defaultDirectory = this.getDefaultDirectoryPath(defaultTarget);
     if (defaultDirectory) {
-      const relativeCandidate = normalizeVaultPath(`${defaultDirectory}/${normalizedQuery}`);
+      const relativeCandidate = normalizeVaultPath(
+        `${defaultDirectory}/${normalizedQuery}`
+      );
       const relativeMatch = await this.resolveExactTargetByVaultPath(relativeCandidate);
       if (relativeMatch) {
         return relativeMatch;
@@ -1912,7 +4642,9 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     }
     const normalizedQueryLower = normalizedQuery.toLowerCase();
     const basenameMatches = selectableTargets.filter((target) => {
-      const normalizedTargetPath = normalizeVaultPath(target.path).toLowerCase();
+      const normalizedTargetPath = normalizeVaultPath(
+        target.path
+      ).toLowerCase();
       const segments = normalizedTargetPath.split("/");
       return segments[segments.length - 1] === normalizedQueryLower;
     });
@@ -1933,11 +4665,17 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
   async chooseTarget() {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
-      new import_obsidian5.Notice("No publishable files or subdirectories were found in this vault.");
+      new import_obsidian8.Notice(
+        "No publishable files or subdirectories were found in this vault."
+      );
       return null;
     }
     const defaultTarget = this.getActiveDefaultTarget();
-    const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultTarget?.vaultPath);
+    const modal = new DirectoryPickerModal(
+      this.app,
+      selectableTargets,
+      defaultTarget?.vaultPath
+    );
     const selected = await modal.openAndGetValue();
     if (!selected) {
       const unmatchedQuery = modal.getUnmatchedQuery();
@@ -1950,7 +4688,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
         if (resolvedFromQuery) {
           return resolvedFromQuery;
         }
-        new import_obsidian5.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
+        new import_obsidian8.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
       }
       return null;
     }
@@ -2004,7 +4742,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     if (suffix) {
       fragment.append(suffix.startsWith(" ") ? suffix : ` ${suffix}`);
     }
-    notice = new import_obsidian5.Notice(fragment, 1e4);
+    notice = new import_obsidian8.Notice(fragment, 1e4);
     notice.noticeEl.addClass("vault-publisher-clickable-notice");
     notice.noticeEl.setAttribute("aria-label", `Open ${repoUrl}`);
     notice.noticeEl.title = "Open repository in browser";
@@ -2045,12 +4783,12 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       return;
     }
     if (target.targetType === "directory" && isVaultRoot(target.vaultPath)) {
-      new import_obsidian5.Notice("Vault root cannot be published. Select a subdirectory.");
+      new import_obsidian8.Notice("Vault root cannot be published. Select a subdirectory.");
       return;
     }
     const vaultBasePath = this.getVaultBasePath();
     if (!vaultBasePath) {
-      new import_obsidian5.Notice("Could not resolve the vault base path.");
+      new import_obsidian8.Notice("Could not resolve the vault base path.");
       return;
     }
     if (target.targetType === "directory") {
@@ -2062,7 +4800,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
   async publishDirectoryTarget(vaultPath, vaultBasePath) {
     const targetPath = absolutePathForVaultPath(vaultBasePath, vaultPath);
     if (!ensureInsideVault(vaultBasePath, targetPath)) {
-      new import_obsidian5.Notice("Selected path is outside the vault. Aborting.");
+      new import_obsidian8.Notice("Selected path is outside the vault. Aborting.");
       return;
     }
     const existingRecord = this.configStore.findTarget("directory", vaultPath);
@@ -2071,15 +4809,20 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       return;
     }
     const folderName = folderNameFromVaultPath(vaultPath);
-    const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? folderName);
+    const baseRepoName = sanitizeRepoName(
+      existingRecord?.repoName ?? folderName
+    );
     const repoState = await this.gitService.detectRepoState(targetPath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new import_obsidian5.Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 1e4);
+      new import_obsidian8.Notice(
+        "This directory uses a non-GitHub origin. v1 supports GitHub remotes only.",
+        1e4
+      );
       return;
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      new import_obsidian5.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
+      new import_obsidian8.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
         await this.gitService.initRepo(targetPath);
@@ -2102,13 +4845,21 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       await this.configStore.save();
       const repoUrl2 = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      this.showPublishedRepoNotice(`Published ${vaultPath} ->`, repoUrl2, suffix, true);
+      this.showPublishedRepoNotice(
+        `Published ${vaultPath} ->`,
+        repoUrl2,
+        suffix,
+        true
+      );
       return;
     }
-    new import_obsidian5.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
-    const pushResult = await this.gitService.pushDirectory(targetPath, folderName);
+    new import_obsidian8.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
+    const pushResult = await this.gitService.pushDirectory(
+      targetPath,
+      folderName
+    );
     if (pushResult.status === "failed") {
-      new import_obsidian5.Notice(pushResult.error ?? "Push failed.", 12e3);
+      new import_obsidian8.Notice(pushResult.error ?? "Push failed.", 12e3);
       return;
     }
     const repoName = existingRecord?.repoName || (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) || baseRepoName;
@@ -2124,16 +4875,19 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     });
     await this.configStore.save();
     if (pushResult.status === "up_to_date") {
-      new import_obsidian5.Notice("Already up to date.");
+      new import_obsidian8.Notice("Already up to date.");
       return;
     }
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new import_obsidian5.Notice(`Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`, 8e3);
+    new import_obsidian8.Notice(
+      `Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`,
+      8e3
+    );
   }
   async publishFileTarget(vaultPath, vaultBasePath) {
     const sourceFile = this.app.vault.getAbstractFileByPath(vaultPath);
-    if (!(sourceFile instanceof import_obsidian5.TFile)) {
-      new import_obsidian5.Notice(`File not found: ${vaultPath}`);
+    if (!(sourceFile instanceof import_obsidian8.TFile)) {
+      new import_obsidian8.Notice(`File not found: ${vaultPath}`);
       return;
     }
     const existingRecord = this.configStore.findTarget("file", vaultPath);
@@ -2141,20 +4895,33 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     if (!visibility) {
       return;
     }
-    const sourceAbsolutePath = absolutePathForVaultPath(vaultBasePath, vaultPath);
+    const sourceAbsolutePath = absolutePathForVaultPath(
+      vaultBasePath,
+      vaultPath
+    );
     const mirrorPath = existingRecord?.mirrorPath ?? this.buildMirrorRelativePath(vaultPath);
-    const mirrorFileName = existingRecord?.mirrorFileName ?? import_node_path3.default.posix.basename(vaultPath);
-    const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, mirrorPath);
+    const mirrorFileName = existingRecord?.mirrorFileName ?? import_node_path4.default.posix.basename(vaultPath);
+    const mirrorAbsolutePath = absolutePathForVaultPath(
+      vaultBasePath,
+      mirrorPath
+    );
     if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
-      new import_obsidian5.Notice("File publish path resolved outside vault. Aborting.");
+      new import_obsidian8.Notice("File publish path resolved outside vault. Aborting.");
       return;
     }
     const fileStem = fileStemFromVaultPath(vaultPath);
     const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? fileStem);
-    await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, mirrorFileName);
+    await this.gitService.syncSingleFileToRepo(
+      sourceAbsolutePath,
+      mirrorAbsolutePath,
+      mirrorFileName
+    );
     let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new import_obsidian5.Notice("This file target uses a non-GitHub origin. v1 supports GitHub remotes only.", 12e3);
+      new import_obsidian8.Notice(
+        "This file target uses a non-GitHub origin. v1 supports GitHub remotes only.",
+        12e3
+      );
       return;
     }
     if (!repoState.hasLocalGit) {
@@ -2163,7 +4930,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasOrigin) {
-      new import_obsidian5.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
+      new import_obsidian8.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         mirrorAbsolutePath,
         fileStem,
@@ -2184,13 +4951,21 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       await this.configStore.save();
       const repoUrl2 = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      this.showPublishedRepoNotice(`Published file ${vaultPath} ->`, repoUrl2, suffix, true);
+      this.showPublishedRepoNotice(
+        `Published file ${vaultPath} ->`,
+        repoUrl2,
+        suffix,
+        true
+      );
       return;
     }
-    new import_obsidian5.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
-    const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
+    new import_obsidian8.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
+    const pushResult = await this.gitService.pushDirectory(
+      mirrorAbsolutePath,
+      fileStem
+    );
     if (pushResult.status === "failed") {
-      new import_obsidian5.Notice(pushResult.error ?? "File push failed.", 12e3);
+      new import_obsidian8.Notice(pushResult.error ?? "File push failed.", 12e3);
       return;
     }
     const repoName = existingRecord?.repoName || (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) || baseRepoName;
@@ -2208,11 +4983,14 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     });
     await this.configStore.save();
     if (pushResult.status === "up_to_date") {
-      new import_obsidian5.Notice(`File repo already up to date: ${vaultPath}`, 6e3);
+      new import_obsidian8.Notice(`File repo already up to date: ${vaultPath}`, 6e3);
       return;
     }
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new import_obsidian5.Notice(`Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`, 9e3);
+    new import_obsidian8.Notice(
+      `Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`,
+      9e3
+    );
   }
   summarizeResults(results) {
     return {
@@ -2230,7 +5008,7 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     let changed = false;
     for (const record of records) {
       const sourceItem = this.app.vault.getAbstractFileByPath(record.vaultPath);
-      if (!(sourceItem instanceof import_obsidian5.TFile)) {
+      if (!(sourceItem instanceof import_obsidian8.TFile)) {
         results.push({
           targetType: "file",
           vaultPath: record.vaultPath,
@@ -2248,8 +5026,14 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
         });
         continue;
       }
-      const sourceAbsolutePath = absolutePathForVaultPath(vaultBasePath, record.vaultPath);
-      const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, record.mirrorPath);
+      const sourceAbsolutePath = absolutePathForVaultPath(
+        vaultBasePath,
+        record.vaultPath
+      );
+      const mirrorAbsolutePath = absolutePathForVaultPath(
+        vaultBasePath,
+        record.mirrorPath
+      );
       if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
         results.push({
           targetType: "file",
@@ -2260,7 +5044,11 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
         continue;
       }
       try {
-        await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, record.mirrorFileName);
+        await this.gitService.syncSingleFileToRepo(
+          sourceAbsolutePath,
+          mirrorAbsolutePath,
+          record.mirrorFileName
+        );
         let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
         if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
           results.push({
@@ -2301,7 +5089,10 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
           changed = true;
           continue;
         }
-        const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
+        const pushResult = await this.gitService.pushDirectory(
+          mirrorAbsolutePath,
+          fileStem
+        );
         results.push({
           ...pushResult,
           targetType: "file",
@@ -2334,10 +5125,10 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     }
     const vaultBasePath = this.getVaultBasePath();
     if (!vaultBasePath) {
-      new import_obsidian5.Notice("Could not resolve the vault base path.");
+      new import_obsidian8.Notice("Could not resolve the vault base path.");
       return;
     }
-    new import_obsidian5.Notice("Pushing all repositories...", 5e3);
+    new import_obsidian8.Notice("Pushing all repositories...", 5e3);
     const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",
       resolveBaseRepoName: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath)
@@ -2352,7 +5143,10 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
       if (!repoName) {
         continue;
       }
-      const existing = this.configStore.findTarget("directory", result.vaultPath);
+      const existing = this.configStore.findTarget(
+        "directory",
+        result.vaultPath
+      );
       const visibility = existing?.visibility ?? "private";
       const lastPushed = result.status === "pushed" ? nowIso : existing?.lastPushed ?? nowIso;
       this.configStore.upsertTarget({
@@ -2373,31 +5167,268 @@ var VaultPublisherPlugin = class extends import_obsidian5.Plugin {
     if (shouldSave) {
       await this.configStore.save();
     }
-    const summary = this.summarizeResults([...directorySummary.results, ...filePush.results]);
+    const summary = this.summarizeResults([
+      ...directorySummary.results,
+      ...filePush.results
+    ]);
     if (summary.total === 0) {
-      new import_obsidian5.Notice("No standalone or managed file repositories found to push.");
+      new import_obsidian8.Notice("No standalone or managed file repositories found to push.");
       return;
     }
-    new import_obsidian5.Notice(
+    new import_obsidian8.Notice(
       `Push All complete: ${summary.pushed} pushed, ${summary.upToDate} up to date, ${summary.failed} failed, ${summary.skipped} skipped.`,
       1e4
     );
-    const failures = summary.results.filter((result) => result.status === "failed");
+    const failures = summary.results.filter(
+      (result) => result.status === "failed"
+    );
     if (failures.length > 0) {
-      const details = failures.slice(0, 3).map((failure) => `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`).join(" | ");
-      new import_obsidian5.Notice(`Push failures: ${details}`, 12e3);
+      const details = failures.slice(0, 3).map(
+        (failure) => `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`
+      ).join(" | ");
+      new import_obsidian8.Notice(`Push failures: ${details}`, 12e3);
     }
   }
   showCommandError(error) {
     if (error instanceof GitCommandError) {
-      new import_obsidian5.Notice(`${error.command} failed: ${error.displayMessage()}`, 15e3);
+      new import_obsidian8.Notice(`${error.command} failed: ${error.displayMessage()}`, 15e3);
+      return;
+    }
+    if (error instanceof StaticSitePublishError) {
+      new import_obsidian8.Notice(error.message, 15e3);
       return;
     }
     if (error instanceof Error) {
-      new import_obsidian5.Notice(error.message, 12e3);
+      new import_obsidian8.Notice(error.message, 12e3);
       return;
     }
-    new import_obsidian5.Notice("An unknown error occurred.", 12e3);
+    new import_obsidian8.Notice("An unknown error occurred.", 12e3);
+  }
+  // --- Static Site Hosts (experimental) ---
+  getConfigStore() {
+    return this.configStore;
+  }
+  async saveConfig() {
+    await this.configStore.save();
+  }
+  getStaticSiteHosts() {
+    return this.configStore.getStaticSiteHosts();
+  }
+  async upsertStaticSiteHost(host) {
+    this.configStore.upsertStaticSiteHost(host);
+    await this.configStore.save();
+  }
+  async removeStaticSiteHost(hostId) {
+    const removed = this.configStore.removeStaticSiteHost(hostId);
+    if (removed) {
+      await this.configStore.save();
+    }
+    return removed;
+  }
+  async resolveStaticSiteHost(frontmatterHostId) {
+    const hosts = this.configStore.getStaticSiteHosts();
+    if (hosts.length === 0) {
+      new import_obsidian8.Notice(
+        "No static site hosts configured. Open Vault Publisher settings and add a host under 'Static Site Hosts'.",
+        1e4
+      );
+      return null;
+    }
+    if (frontmatterHostId) {
+      const byId = hosts.find((host) => host.id === frontmatterHostId);
+      if (byId) {
+        return byId;
+      }
+      new import_obsidian8.Notice(
+        `Frontmatter 'host' is '${frontmatterHostId}' but no host with that id is configured. Pick one manually.`,
+        1e4
+      );
+    }
+    if (hosts.length === 1) {
+      return hosts[0];
+    }
+    return new StaticSiteHostPickerModal(this.app, hosts).openAndGetValue();
+  }
+  async handlePublishToStaticSite() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new import_obsidian8.Notice(
+        "Open the Markdown note you want to publish, then run this command.",
+        8e3
+      );
+      return;
+    }
+    const cache = this.app.metadataCache.getFileCache(activeFile);
+    const frontmatter = cache?.frontmatter ?? {};
+    const rawHostId = typeof frontmatter.host === "string" ? frontmatter.host : void 0;
+    const host = await this.resolveStaticSiteHost(rawHostId);
+    if (!host) {
+      return;
+    }
+    const fileContent = await this.app.vault.read(activeFile);
+    const markdownBody = this.stripFrontmatter(fileContent);
+    const previousRecord = this.configStore.findStaticSitePublish(
+      host.id,
+      activeFile.path
+    );
+    new import_obsidian8.Notice(`Publishing ${activeFile.path} to ${host.name}...`, 4e3);
+    try {
+      const result = await this.staticSitePublisher.publish({
+        host,
+        frontmatter,
+        markdownBody,
+        vaultPath: activeFile.path,
+        previousRecord
+      });
+      const record = {
+        hostId: host.id,
+        vaultPath: activeFile.path,
+        slug: result.slug,
+        lastPublished: (/* @__PURE__ */ new Date()).toISOString(),
+        lastCommitSha: result.commitSha ?? void 0
+      };
+      this.configStore.upsertStaticSitePublish(record);
+      await this.configStore.save();
+      for (const warning of result.warnings) {
+        new import_obsidian8.Notice(`Warning: ${warning}`, 8e3);
+      }
+      if (result.status === "unchanged") {
+        new import_obsidian8.Notice(`Already up to date on ${host.name}.`, 6e3);
+        return;
+      }
+      if (result.publicUrl) {
+        this.showStaticSitePublishedNotice(
+          host.name,
+          result.publicUrl,
+          result.removedPreviousSlug
+        );
+      } else {
+        const suffix = result.removedPreviousSlug ? ` (old slug '${result.removedPreviousSlug}' removed)` : "";
+        new import_obsidian8.Notice(
+          `Published to ${host.name}: ${result.postRelativePathFromRepo}${suffix}`,
+          1e4
+        );
+      }
+    } catch (error) {
+      this.showCommandError(error);
+    }
+  }
+  async handleUnpublishFromStaticSite() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new import_obsidian8.Notice(
+        "Open the Markdown note you want to unpublish, then run this command.",
+        8e3
+      );
+      return;
+    }
+    const publishes = this.configStore.getStaticSitePublishes().filter(
+      (record2) => record2.vaultPath === normalizeVaultPath(activeFile.path)
+    );
+    if (publishes.length === 0) {
+      new import_obsidian8.Notice(
+        "This note has not been published to any static site host.",
+        8e3
+      );
+      return;
+    }
+    let record = publishes[0];
+    if (publishes.length > 1) {
+      const hosts = this.configStore.getStaticSiteHosts();
+      const candidateHosts = publishes.map((publish) => hosts.find((host2) => host2.id === publish.hostId)).filter((host2) => host2 !== void 0);
+      const chosenHost = await new StaticSiteHostPickerModal(
+        this.app,
+        candidateHosts
+      ).openAndGetValue();
+      if (!chosenHost) {
+        return;
+      }
+      const matching = publishes.find(
+        (publish) => publish.hostId === chosenHost.id
+      );
+      if (!matching) {
+        return;
+      }
+      record = matching;
+    }
+    const host = this.configStore.findStaticSiteHost(record.hostId);
+    if (!host) {
+      new import_obsidian8.Notice(
+        `Host '${record.hostId}' is no longer configured. Remove the publish record manually in settings.`,
+        1e4
+      );
+      return;
+    }
+    const confirmed = await new StaticSiteUnpublishConfirmModal(
+      this.app,
+      host,
+      record
+    ).openAndConfirm();
+    if (!confirmed) {
+      return;
+    }
+    try {
+      const result = await this.staticSitePublisher.unpublish({ host, record });
+      this.configStore.removeStaticSitePublish(host.id, record.vaultPath);
+      await this.configStore.save();
+      if (result.status === "not_found") {
+        new import_obsidian8.Notice(
+          `Post file not found on disk; publish record removed.`,
+          8e3
+        );
+        return;
+      }
+      new import_obsidian8.Notice(`Unpublished from ${host.name}.`, 8e3);
+    } catch (error) {
+      this.showCommandError(error);
+    }
+  }
+  stripFrontmatter(fileContent) {
+    if (!fileContent.startsWith("---")) {
+      return fileContent;
+    }
+    const match = fileContent.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+    if (!match) {
+      return fileContent;
+    }
+    return fileContent.slice(match[0].length);
+  }
+  showStaticSitePublishedNotice(hostName, url, removedPreviousSlug) {
+    const fragment = document.createDocumentFragment();
+    fragment.append(`Published to ${hostName}: `);
+    const linkEl = document.createElement("a");
+    linkEl.href = url;
+    linkEl.textContent = url;
+    linkEl.target = "_blank";
+    linkEl.rel = "noopener noreferrer";
+    linkEl.className = "vault-publisher-notice-link";
+    fragment.append(linkEl);
+    if (removedPreviousSlug) {
+      fragment.append(` (old slug '${removedPreviousSlug}' removed)`);
+    }
+    const notice = new import_obsidian8.Notice(fragment, 1e4);
+    notice.noticeEl.addClass("vault-publisher-clickable-notice");
+    notice.noticeEl.setAttribute("aria-label", `Open ${url}`);
+    notice.noticeEl.title = "Open post in browser";
+    const openLink = (event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      void this.openExternalUrl(url);
+      notice.hide();
+    };
+    linkEl.addEventListener("click", (event) => {
+      openLink(event);
+    });
+    notice.noticeEl.addEventListener("click", (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (event.target instanceof HTMLElement && event.target.closest("a")) {
+        return;
+      }
+      openLink(event);
+    });
+    void this.openExternalUrl(url);
   }
 };
 

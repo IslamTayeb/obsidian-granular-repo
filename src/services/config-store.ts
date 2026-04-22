@@ -4,12 +4,16 @@ import {
   LegacyPublishedDirRecord,
   PublishedTargetRecord,
   PublishTargetType,
+  StaticSiteHostConfig,
+  StaticSitePublishRecord,
   VaultPublisherData,
 } from "../types";
 import { normalizeVaultPath } from "../utils/path-utils";
 
 const DEFAULT_DATA: VaultPublisherData = {
   publishedTargets: [],
+  staticSiteHosts: [],
+  staticSitePublishes: [],
 };
 
 type LegacyDataShape = {
@@ -50,7 +54,10 @@ function isValidTargetRecord(value: unknown): value is PublishedTargetRecord {
     return false;
   }
 
-  if (candidate.originUrl !== undefined && typeof candidate.originUrl !== "string") {
+  if (
+    candidate.originUrl !== undefined &&
+    typeof candidate.originUrl !== "string"
+  ) {
     return false;
   }
 
@@ -66,19 +73,30 @@ function isValidTargetRecord(value: unknown): value is PublishedTargetRecord {
   return true;
 }
 
-function normalizeTargetRecord(record: PublishedTargetRecord): PublishedTargetRecord {
+function normalizeTargetRecord(
+  record: PublishedTargetRecord,
+): PublishedTargetRecord {
   return {
     ...record,
     targetType: record.targetType,
     vaultPath: normalizeVaultPath(record.vaultPath),
     remote: "origin",
-    originUrl: typeof record.originUrl === "string" && record.originUrl.length > 0 ? record.originUrl : undefined,
-    mirrorPath: record.targetType === "file" ? normalizeVaultPath(record.mirrorPath ?? "") : undefined,
-    mirrorFileName: record.targetType === "file" ? record.mirrorFileName : undefined,
+    originUrl:
+      typeof record.originUrl === "string" && record.originUrl.length > 0
+        ? record.originUrl
+        : undefined,
+    mirrorPath:
+      record.targetType === "file"
+        ? normalizeVaultPath(record.mirrorPath ?? "")
+        : undefined,
+    mirrorFileName:
+      record.targetType === "file" ? record.mirrorFileName : undefined,
   };
 }
 
-function legacyToTargetRecord(record: LegacyPublishedDirRecord): PublishedTargetRecord {
+function legacyToTargetRecord(
+  record: LegacyPublishedDirRecord,
+): PublishedTargetRecord {
   return {
     targetType: "directory",
     vaultPath: normalizeVaultPath(record.vaultPath),
@@ -89,10 +107,69 @@ function legacyToTargetRecord(record: LegacyPublishedDirRecord): PublishedTarget
   };
 }
 
+function isStringField(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isValidStaticSiteHost(value: unknown): value is StaticSiteHostConfig {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<StaticSiteHostConfig>;
+  if (
+    !isStringField(candidate.id) ||
+    !isStringField(candidate.name) ||
+    !isStringField(candidate.repoRoot) ||
+    !isStringField(candidate.siteSubdir) ||
+    !isStringField(candidate.postPathTemplate) ||
+    !isStringField(candidate.templateRelPath) ||
+    !isStringField(candidate.contentMarker) ||
+    !isStringField(candidate.commitMessagePublish) ||
+    !isStringField(candidate.commitMessageUnpublish) ||
+    !isStringField(candidate.remote)
+  ) {
+    return false;
+  }
+
+  const tokens = candidate.tokens;
+  if (!tokens || typeof tokens !== "object") {
+    return false;
+  }
+
+  return (
+    isStringField(tokens.title) &&
+    isStringField(tokens.slug) &&
+    isStringField(tokens.description) &&
+    isStringField(tokens.dateIso) &&
+    isStringField(tokens.dateDisplay)
+  );
+}
+
+function isValidPublishRecord(
+  value: unknown,
+): value is StaticSitePublishRecord {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as Partial<StaticSitePublishRecord>;
+  return (
+    isStringField(candidate.hostId) &&
+    isStringField(candidate.vaultPath) &&
+    isStringField(candidate.slug) &&
+    isStringField(candidate.lastPublished)
+  );
+}
+
 export class ConfigStore {
   private readonly plugin: Plugin;
 
-  private data: VaultPublisherData = { ...DEFAULT_DATA };
+  private data: VaultPublisherData = {
+    publishedTargets: [],
+    staticSiteHosts: [],
+    staticSitePublishes: [],
+  };
 
   constructor(plugin: Plugin) {
     this.plugin = plugin;
@@ -101,7 +178,11 @@ export class ConfigStore {
   async load(): Promise<void> {
     const loaded = await this.plugin.loadData();
     if (!loaded || typeof loaded !== "object") {
-      this.data = { ...DEFAULT_DATA };
+      this.data = {
+        publishedTargets: [],
+        staticSiteHosts: [],
+        staticSitePublishes: [],
+      };
       return;
     }
 
@@ -110,14 +191,33 @@ export class ConfigStore {
 
     let records: PublishedTargetRecord[] = [];
     if (Array.isArray(candidate.publishedTargets)) {
-      records = candidate.publishedTargets.filter(isValidTargetRecord).map((record) => normalizeTargetRecord(record));
+      records = candidate.publishedTargets
+        .filter(isValidTargetRecord)
+        .map((record) => normalizeTargetRecord(record));
     } else if (Array.isArray(candidate.publishedDirs)) {
-      records = candidate.publishedDirs.filter(isLegacyRecord).map((record) => legacyToTargetRecord(record));
+      records = candidate.publishedDirs
+        .filter(isLegacyRecord)
+        .map((record) => legacyToTargetRecord(record));
       migrated = true;
     }
 
+    const staticSiteHosts = Array.isArray(candidate.staticSiteHosts)
+      ? candidate.staticSiteHosts.filter(isValidStaticSiteHost)
+      : [];
+
+    const staticSitePublishes = Array.isArray(candidate.staticSitePublishes)
+      ? candidate.staticSitePublishes
+          .filter(isValidPublishRecord)
+          .map((record) => ({
+            ...record,
+            vaultPath: normalizeVaultPath(record.vaultPath),
+          }))
+      : [];
+
     this.data = {
       publishedTargets: records,
+      staticSiteHosts,
+      staticSitePublishes,
     };
 
     if (migrated) {
@@ -134,20 +234,28 @@ export class ConfigStore {
   }
 
   getTargetsByType(targetType: PublishTargetType): PublishedTargetRecord[] {
-    return this.data.publishedTargets.filter((record) => record.targetType === targetType);
+    return this.data.publishedTargets.filter(
+      (record) => record.targetType === targetType,
+    );
   }
 
-  findTarget(targetType: PublishTargetType, vaultPath: string): PublishedTargetRecord | undefined {
+  findTarget(
+    targetType: PublishTargetType,
+    vaultPath: string,
+  ): PublishedTargetRecord | undefined {
     const normalized = normalizeVaultPath(vaultPath);
     return this.data.publishedTargets.find(
-      (record) => record.targetType === targetType && record.vaultPath === normalized,
+      (record) =>
+        record.targetType === targetType && record.vaultPath === normalized,
     );
   }
 
   upsertTarget(record: PublishedTargetRecord): void {
     const normalized = normalizeTargetRecord(record);
     const existingIndex = this.data.publishedTargets.findIndex(
-      (entry) => entry.targetType === normalized.targetType && entry.vaultPath === normalized.vaultPath,
+      (entry) =>
+        entry.targetType === normalized.targetType &&
+        entry.vaultPath === normalized.vaultPath,
     );
 
     if (existingIndex >= 0) {
@@ -162,8 +270,87 @@ export class ConfigStore {
     const normalized = normalizeVaultPath(vaultPath);
     const initialLength = this.data.publishedTargets.length;
     this.data.publishedTargets = this.data.publishedTargets.filter(
-      (record) => !(record.targetType === targetType && record.vaultPath === normalized),
+      (record) =>
+        !(record.targetType === targetType && record.vaultPath === normalized),
     );
     return this.data.publishedTargets.length !== initialLength;
   }
+
+  getStaticSiteHosts(): StaticSiteHostConfig[] {
+    return [...(this.data.staticSiteHosts ?? [])];
+  }
+
+  findStaticSiteHost(hostId: string): StaticSiteHostConfig | undefined {
+    return (this.data.staticSiteHosts ?? []).find((host) => host.id === hostId);
+  }
+
+  upsertStaticSiteHost(host: StaticSiteHostConfig): void {
+    const hosts = this.data.staticSiteHosts ?? [];
+    const existingIndex = hosts.findIndex((entry) => entry.id === host.id);
+    if (existingIndex >= 0) {
+      hosts[existingIndex] = host;
+    } else {
+      hosts.push(host);
+    }
+    this.data.staticSiteHosts = hosts;
+  }
+
+  removeStaticSiteHost(hostId: string): boolean {
+    const hosts = this.data.staticSiteHosts ?? [];
+    const initialLength = hosts.length;
+    this.data.staticSiteHosts = hosts.filter((entry) => entry.id !== hostId);
+    return (this.data.staticSiteHosts?.length ?? 0) !== initialLength;
+  }
+
+  getStaticSitePublishes(): StaticSitePublishRecord[] {
+    return [...(this.data.staticSitePublishes ?? [])];
+  }
+
+  getStaticSitePublishesByHost(hostId: string): StaticSitePublishRecord[] {
+    return (this.data.staticSitePublishes ?? []).filter(
+      (record) => record.hostId === hostId,
+    );
+  }
+
+  findStaticSitePublish(
+    hostId: string,
+    vaultPath: string,
+  ): StaticSitePublishRecord | undefined {
+    const normalized = normalizeVaultPath(vaultPath);
+    return (this.data.staticSitePublishes ?? []).find(
+      (record) => record.hostId === hostId && record.vaultPath === normalized,
+    );
+  }
+
+  upsertStaticSitePublish(record: StaticSitePublishRecord): void {
+    const normalized: StaticSitePublishRecord = {
+      ...record,
+      vaultPath: normalizeVaultPath(record.vaultPath),
+    };
+    const publishes = this.data.staticSitePublishes ?? [];
+    const existingIndex = publishes.findIndex(
+      (entry) =>
+        entry.hostId === normalized.hostId &&
+        entry.vaultPath === normalized.vaultPath,
+    );
+
+    if (existingIndex >= 0) {
+      publishes[existingIndex] = normalized;
+    } else {
+      publishes.push(normalized);
+    }
+    this.data.staticSitePublishes = publishes;
+  }
+
+  removeStaticSitePublish(hostId: string, vaultPath: string): boolean {
+    const normalized = normalizeVaultPath(vaultPath);
+    const publishes = this.data.staticSitePublishes ?? [];
+    const initialLength = publishes.length;
+    this.data.staticSitePublishes = publishes.filter(
+      (entry) => !(entry.hostId === hostId && entry.vaultPath === normalized),
+    );
+    return (this.data.staticSitePublishes?.length ?? 0) !== initialLength;
+  }
 }
+
+export const DEFAULT_CONFIG_DATA = DEFAULT_DATA;

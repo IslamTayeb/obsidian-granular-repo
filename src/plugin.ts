@@ -5,11 +5,20 @@ import path from "node:path";
 import { App, Notice, Plugin, TFile, TFolder } from "obsidian";
 
 import { MIRROR_ROOT } from "./constants";
-import { DirectoryPickerModal, PublishTargetItem } from "./modals/directory-picker-modal";
+import {
+  DirectoryPickerModal,
+  PublishTargetItem,
+} from "./modals/directory-picker-modal";
+import { StaticSiteHostPickerModal } from "./modals/static-site-host-picker-modal";
+import { StaticSiteUnpublishConfirmModal } from "./modals/static-site-unpublish-confirm-modal";
 import { VisibilityModal } from "./modals/visibility-modal";
 import { ConfigStore } from "./services/config-store";
 import { GitCommandError, GitService } from "./services/git-service";
 import { buildRepoInventory } from "./services/repo-inventory";
+import {
+  StaticSitePublishError,
+  StaticSitePublisher,
+} from "./services/static-site-publisher";
 import { VaultPublisherSettingTab } from "./settings/vault-publisher-setting-tab";
 import {
   PublishedTargetRecord,
@@ -18,6 +27,8 @@ import {
   PushRepoResult,
   RepoInventoryEntry,
   RepoVisibility,
+  StaticSiteHostConfig,
+  StaticSitePublishRecord,
 } from "./types";
 import { isGitHubOrigin, originToWebUrl } from "./utils/github-url";
 import {
@@ -28,7 +39,10 @@ import {
   isVaultRoot,
   normalizeVaultPath,
 } from "./utils/path-utils";
-import { parseRepoNameFromOrigin, sanitizeRepoName } from "./utils/repo-name-utils";
+import {
+  parseRepoNameFromOrigin,
+  sanitizeRepoName,
+} from "./utils/repo-name-utils";
 
 type FileSystemAdapterLike = {
   basePath?: string;
@@ -50,6 +64,8 @@ export default class VaultPublisherPlugin extends Plugin {
 
   private gitService!: GitService;
 
+  private staticSitePublisher!: StaticSitePublisher;
+
   private isRunning = false;
 
   async onload(): Promise<void> {
@@ -57,6 +73,7 @@ export default class VaultPublisherPlugin extends Plugin {
     await this.configStore.load();
 
     this.gitService = new GitService();
+    this.staticSitePublisher = new StaticSitePublisher(this.gitService);
     this.addSettingTab(new VaultPublisherSettingTab(this.app, this));
 
     this.addCommand({
@@ -85,6 +102,26 @@ export default class VaultPublisherPlugin extends Plugin {
       callback: () => {
         void this.executeExclusive(async () => {
           await this.handlePushAllRepositories();
+        });
+      },
+    });
+
+    this.addCommand({
+      id: "publish-to-static-site",
+      name: "Publish Note to Static Site Host (Experimental)",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handlePublishToStaticSite();
+        });
+      },
+    });
+
+    this.addCommand({
+      id: "unpublish-from-static-site",
+      name: "Unpublish Note from Static Site Host (Experimental)",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handleUnpublishFromStaticSite();
         });
       },
     });
@@ -141,7 +178,8 @@ export default class VaultPublisherPlugin extends Plugin {
       trackedTargets: this.configStore.getAllTargets(),
       standaloneRepoPaths,
       orphanMirrorPaths,
-      resolveRepoState: async (absolutePath) => this.gitService.detectRepoState(absolutePath),
+      resolveRepoState: async (absolutePath) =>
+        this.gitService.detectRepoState(absolutePath),
     });
   }
 
@@ -153,34 +191,50 @@ export default class VaultPublisherPlugin extends Plugin {
     return didSucceed;
   }
 
-  private async performUnpublishRepo(entry: RepoInventoryEntry): Promise<boolean> {
+  private async performUnpublishRepo(
+    entry: RepoInventoryEntry,
+  ): Promise<boolean> {
     if (!entry.canUnpublish || !entry.githubRepoSlug) {
-      new Notice(entry.disabledReason ?? "This repository cannot be unpublished.", 10000);
+      new Notice(
+        entry.disabledReason ?? "This repository cannot be unpublished.",
+        10000,
+      );
       return false;
     }
 
     const githubStatus = await this.gitService.checkGitHubPrerequisites();
     if (!githubStatus.ok) {
-      new Notice(githubStatus.message ?? "Missing required GitHub tools.", 12000);
+      new Notice(
+        githubStatus.message ?? "Missing required GitHub tools.",
+        12000,
+      );
       return false;
     }
 
     let remoteResult: { status: "deleted" | "not_found" };
     try {
-      remoteResult = await this.gitService.deleteGitHubRepo(entry.githubRepoSlug);
+      remoteResult = await this.gitService.deleteGitHubRepo(
+        entry.githubRepoSlug,
+      );
     } catch (error: unknown) {
       this.showCommandError(error);
       return false;
     }
 
     try {
-      if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "scanned-directory") {
+      if (
+        entry.sourceKind === "tracked-directory" ||
+        entry.sourceKind === "scanned-directory"
+      ) {
         await this.gitService.removeGitDirectory(entry.localRepoPath);
       } else {
         await this.gitService.removeDirectory(entry.localRepoPath);
       }
 
-      if (entry.sourceKind === "tracked-directory" || entry.sourceKind === "tracked-file") {
+      if (
+        entry.sourceKind === "tracked-directory" ||
+        entry.sourceKind === "tracked-file"
+      ) {
         this.configStore.removeTarget(entry.targetType, entry.vaultPath);
         await this.configStore.save();
       }
@@ -195,7 +249,10 @@ export default class VaultPublisherPlugin extends Plugin {
         remoteResult.status === "deleted"
           ? `Deleted GitHub repo ${entry.githubRepoSlug}`
           : `GitHub repo ${entry.githubRepoSlug} was already absent`;
-      new Notice(`${remoteMessage}, but local cleanup failed: ${detail}`, 15000);
+      new Notice(
+        `${remoteMessage}, but local cleanup failed: ${detail}`,
+        15000,
+      );
       return false;
     }
 
@@ -315,7 +372,9 @@ export default class VaultPublisherPlugin extends Plugin {
     return targets;
   }
 
-  private resolveTargetSelection(item: PublishTargetItem): ResolvedPublishTarget {
+  private resolveTargetSelection(
+    item: PublishTargetItem,
+  ): ResolvedPublishTarget {
     const normalizedPath = normalizeVaultPath(item.path);
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
 
@@ -332,7 +391,9 @@ export default class VaultPublisherPlugin extends Plugin {
     };
   }
 
-  private getDefaultDirectoryPath(target: ResolvedPublishTarget | undefined): string | null {
+  private getDefaultDirectoryPath(
+    target: ResolvedPublishTarget | undefined,
+  ): string | null {
     if (!target) {
       return null;
     }
@@ -347,21 +408,29 @@ export default class VaultPublisherPlugin extends Plugin {
     return parentDirectory || null;
   }
 
-  private async resolveExactTargetByVaultPath(vaultPath: string): Promise<ResolvedPublishTarget | null> {
+  private async resolveExactTargetByVaultPath(
+    vaultPath: string,
+  ): Promise<ResolvedPublishTarget | null> {
     const normalizedPath = normalizeVaultPath(vaultPath);
     if (!normalizedPath) {
       return null;
     }
 
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (abstractItem instanceof TFolder && this.isSelectableDirectory(normalizedPath)) {
+    if (
+      abstractItem instanceof TFolder &&
+      this.isSelectableDirectory(normalizedPath)
+    ) {
       return {
         targetType: "directory",
         vaultPath: normalizedPath,
       };
     }
 
-    if (abstractItem instanceof TFile && this.isSelectableFile(normalizedPath)) {
+    if (
+      abstractItem instanceof TFile &&
+      this.isSelectableFile(normalizedPath)
+    ) {
       return {
         targetType: "file",
         vaultPath: normalizedPath,
@@ -373,7 +442,10 @@ export default class VaultPublisherPlugin extends Plugin {
       return null;
     }
 
-    const absolutePath = absolutePathForVaultPath(vaultBasePath, normalizedPath);
+    const absolutePath = absolutePathForVaultPath(
+      vaultBasePath,
+      normalizedPath,
+    );
     if (!ensureInsideVault(vaultBasePath, absolutePath)) {
       return null;
     }
@@ -400,7 +472,9 @@ export default class VaultPublisherPlugin extends Plugin {
     return null;
   }
 
-  private async findUniqueTargetByBasename(query: string): Promise<ResolvedPublishTarget | null> {
+  private async findUniqueTargetByBasename(
+    query: string,
+  ): Promise<ResolvedPublishTarget | null> {
     const normalizedQuery = normalizeVaultPath(query);
     if (!normalizedQuery || normalizedQuery.includes("/")) {
       return null;
@@ -414,14 +488,20 @@ export default class VaultPublisherPlugin extends Plugin {
     let foundMatch: ResolvedPublishTarget | null = null;
     let hasMultipleMatches = false;
 
-    const walk = async (absoluteDirectory: string, relativeDirectory: string): Promise<void> => {
+    const walk = async (
+      absoluteDirectory: string,
+      relativeDirectory: string,
+    ): Promise<void> => {
       if (hasMultipleMatches) {
         return;
       }
 
       let entries;
       try {
-        entries = await fsp.readdir(absoluteDirectory, { withFileTypes: true, encoding: "utf8" });
+        entries = await fsp.readdir(absoluteDirectory, {
+          withFileTypes: true,
+          encoding: "utf8",
+        });
       } catch {
         return;
       }
@@ -435,11 +515,16 @@ export default class VaultPublisherPlugin extends Plugin {
           continue;
         }
 
-        const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+        const relativePath = relativeDirectory
+          ? `${relativeDirectory}/${entry.name}`
+          : entry.name;
         const normalizedPath = normalizeVaultPath(relativePath);
 
         if (entry.isDirectory()) {
-          if (entry.name === normalizedQuery && this.isSelectableDirectory(normalizedPath)) {
+          if (
+            entry.name === normalizedQuery &&
+            this.isSelectableDirectory(normalizedPath)
+          ) {
             const candidate: ResolvedPublishTarget = {
               targetType: "directory",
               vaultPath: normalizedPath,
@@ -457,7 +542,11 @@ export default class VaultPublisherPlugin extends Plugin {
           continue;
         }
 
-        if (entry.isFile() && entry.name === normalizedQuery && this.isSelectableFile(normalizedPath)) {
+        if (
+          entry.isFile() &&
+          entry.name === normalizedQuery &&
+          this.isSelectableFile(normalizedPath)
+        ) {
           const candidate: ResolvedPublishTarget = {
             targetType: "file",
             vaultPath: normalizedPath,
@@ -491,15 +580,19 @@ export default class VaultPublisherPlugin extends Plugin {
       return null;
     }
 
-    const exactMatch = await this.resolveExactTargetByVaultPath(normalizedQuery);
+    const exactMatch =
+      await this.resolveExactTargetByVaultPath(normalizedQuery);
     if (exactMatch) {
       return exactMatch;
     }
 
     const defaultDirectory = this.getDefaultDirectoryPath(defaultTarget);
     if (defaultDirectory) {
-      const relativeCandidate = normalizeVaultPath(`${defaultDirectory}/${normalizedQuery}`);
-      const relativeMatch = await this.resolveExactTargetByVaultPath(relativeCandidate);
+      const relativeCandidate = normalizeVaultPath(
+        `${defaultDirectory}/${normalizedQuery}`,
+      );
+      const relativeMatch =
+        await this.resolveExactTargetByVaultPath(relativeCandidate);
       if (relativeMatch) {
         return relativeMatch;
       }
@@ -511,7 +604,9 @@ export default class VaultPublisherPlugin extends Plugin {
 
     const normalizedQueryLower = normalizedQuery.toLowerCase();
     const basenameMatches = selectableTargets.filter((target) => {
-      const normalizedTargetPath = normalizeVaultPath(target.path).toLowerCase();
+      const normalizedTargetPath = normalizeVaultPath(
+        target.path,
+      ).toLowerCase();
       const segments = normalizedTargetPath.split("/");
       return segments[segments.length - 1] === normalizedQueryLower;
     });
@@ -521,9 +616,12 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     if (basenameMatches.length > 1 && defaultDirectory) {
-      const normalizedDefaultDirectory = normalizeVaultPath(defaultDirectory).toLowerCase();
+      const normalizedDefaultDirectory =
+        normalizeVaultPath(defaultDirectory).toLowerCase();
       const scopedMatches = basenameMatches.filter((target) =>
-        normalizeVaultPath(target.path).toLowerCase().startsWith(`${normalizedDefaultDirectory}/`),
+        normalizeVaultPath(target.path)
+          .toLowerCase()
+          .startsWith(`${normalizedDefaultDirectory}/`),
       );
 
       if (scopedMatches.length === 1) {
@@ -537,12 +635,18 @@ export default class VaultPublisherPlugin extends Plugin {
   private async chooseTarget(): Promise<ResolvedPublishTarget | null> {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
-      new Notice("No publishable files or subdirectories were found in this vault.");
+      new Notice(
+        "No publishable files or subdirectories were found in this vault.",
+      );
       return null;
     }
 
     const defaultTarget = this.getActiveDefaultTarget();
-    const modal = new DirectoryPickerModal(this.app, selectableTargets, defaultTarget?.vaultPath);
+    const modal = new DirectoryPickerModal(
+      this.app,
+      selectableTargets,
+      defaultTarget?.vaultPath,
+    );
     const selected = await modal.openAndGetValue();
 
     if (!selected) {
@@ -572,11 +676,17 @@ export default class VaultPublisherPlugin extends Plugin {
 
   private buildMirrorRelativePath(fileVaultPath: string): string {
     const stemSlug = sanitizeRepoName(fileStemFromVaultPath(fileVaultPath));
-    const hash = crypto.createHash("sha1").update(fileVaultPath).digest("hex").slice(0, 8);
+    const hash = crypto
+      .createHash("sha1")
+      .update(fileVaultPath)
+      .digest("hex")
+      .slice(0, 8);
     return `${MIRROR_ROOT}/${stemSlug}-${hash}`;
   }
 
-  private async resolveVisibility(existing: PublishedTargetRecord | undefined): Promise<RepoVisibility | null> {
+  private async resolveVisibility(
+    existing: PublishedTargetRecord | undefined,
+  ): Promise<RepoVisibility | null> {
     if (existing) {
       return existing.visibility;
     }
@@ -608,7 +718,12 @@ export default class VaultPublisherPlugin extends Plugin {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  private showPublishedRepoNotice(messagePrefix: string, repoUrl: string, suffix = "", autoOpen = false): void {
+  private showPublishedRepoNotice(
+    messagePrefix: string,
+    repoUrl: string,
+    suffix = "",
+    autoOpen = false,
+  ): void {
     let notice: Notice | null = null;
     const fragment = document.createDocumentFragment();
     fragment.append(`${messagePrefix} `);
@@ -658,7 +773,9 @@ export default class VaultPublisherPlugin extends Plugin {
     }
   }
 
-  private async handlePublishCommand(options?: { forcePicker?: boolean }): Promise<void> {
+  private async handlePublishCommand(options?: {
+    forcePicker?: boolean;
+  }): Promise<void> {
     if (!(await this.ensurePrerequisites())) {
       return;
     }
@@ -694,7 +811,10 @@ export default class VaultPublisherPlugin extends Plugin {
     await this.publishFileTarget(target.vaultPath, vaultBasePath);
   }
 
-  private async publishDirectoryTarget(vaultPath: string, vaultBasePath: string): Promise<void> {
+  private async publishDirectoryTarget(
+    vaultPath: string,
+    vaultBasePath: string,
+  ): Promise<void> {
     const targetPath = absolutePathForVaultPath(vaultBasePath, vaultPath);
     if (!ensureInsideVault(vaultBasePath, targetPath)) {
       new Notice("Selected path is outside the vault. Aborting.");
@@ -708,11 +828,20 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     const folderName = folderNameFromVaultPath(vaultPath);
-    const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? folderName);
+    const baseRepoName = sanitizeRepoName(
+      existingRecord?.repoName ?? folderName,
+    );
 
     const repoState = await this.gitService.detectRepoState(targetPath);
-    if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new Notice("This directory uses a non-GitHub origin. v1 supports GitHub remotes only.", 10000);
+    if (
+      repoState.hasOrigin &&
+      repoState.originUrl &&
+      !repoState.isGitHubOrigin
+    ) {
+      new Notice(
+        "This directory uses a non-GitHub origin. v1 supports GitHub remotes only.",
+        10000,
+      );
       return;
     }
 
@@ -745,12 +874,20 @@ export default class VaultPublisherPlugin extends Plugin {
 
       const repoUrl = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      this.showPublishedRepoNotice(`Published ${vaultPath} ->`, repoUrl, suffix, true);
+      this.showPublishedRepoNotice(
+        `Published ${vaultPath} ->`,
+        repoUrl,
+        suffix,
+        true,
+      );
       return;
     }
 
     new Notice(`Pushing directory repo ${vaultPath}...`, 5000);
-    const pushResult = await this.gitService.pushDirectory(targetPath, folderName);
+    const pushResult = await this.gitService.pushDirectory(
+      targetPath,
+      folderName,
+    );
     if (pushResult.status === "failed") {
       new Notice(pushResult.error ?? "Push failed.", 12000);
       return;
@@ -758,9 +895,14 @@ export default class VaultPublisherPlugin extends Plugin {
 
     const repoName =
       existingRecord?.repoName ||
-      (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) ||
+      (repoState.originUrl
+        ? parseRepoNameFromOrigin(repoState.originUrl)
+        : null) ||
       baseRepoName;
-    const nextLastPushed = pushResult.status === "pushed" ? nowIso : existingRecord?.lastPushed ?? nowIso;
+    const nextLastPushed =
+      pushResult.status === "pushed"
+        ? nowIso
+        : (existingRecord?.lastPushed ?? nowIso);
 
     this.configStore.upsertTarget({
       targetType: "directory",
@@ -779,10 +921,16 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new Notice(`Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`, 8000);
+    new Notice(
+      `Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`,
+      8000,
+    );
   }
 
-  private async publishFileTarget(vaultPath: string, vaultBasePath: string): Promise<void> {
+  private async publishFileTarget(
+    vaultPath: string,
+    vaultBasePath: string,
+  ): Promise<void> {
     const sourceFile = this.app.vault.getAbstractFileByPath(vaultPath);
     if (!(sourceFile instanceof TFile)) {
       new Notice(`File not found: ${vaultPath}`);
@@ -795,23 +943,45 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
-    const sourceAbsolutePath = absolutePathForVaultPath(vaultBasePath, vaultPath);
-    const mirrorPath = existingRecord?.mirrorPath ?? this.buildMirrorRelativePath(vaultPath);
-    const mirrorFileName = existingRecord?.mirrorFileName ?? path.posix.basename(vaultPath);
-    const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, mirrorPath);
+    const sourceAbsolutePath = absolutePathForVaultPath(
+      vaultBasePath,
+      vaultPath,
+    );
+    const mirrorPath =
+      existingRecord?.mirrorPath ?? this.buildMirrorRelativePath(vaultPath);
+    const mirrorFileName =
+      existingRecord?.mirrorFileName ?? path.posix.basename(vaultPath);
+    const mirrorAbsolutePath = absolutePathForVaultPath(
+      vaultBasePath,
+      mirrorPath,
+    );
 
-    if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
+    if (
+      !ensureInsideVault(vaultBasePath, sourceAbsolutePath) ||
+      !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)
+    ) {
       new Notice("File publish path resolved outside vault. Aborting.");
       return;
     }
 
     const fileStem = fileStemFromVaultPath(vaultPath);
     const baseRepoName = sanitizeRepoName(existingRecord?.repoName ?? fileStem);
-    await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, mirrorFileName);
+    await this.gitService.syncSingleFileToRepo(
+      sourceAbsolutePath,
+      mirrorAbsolutePath,
+      mirrorFileName,
+    );
 
     let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
-    if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new Notice("This file target uses a non-GitHub origin. v1 supports GitHub remotes only.", 12000);
+    if (
+      repoState.hasOrigin &&
+      repoState.originUrl &&
+      !repoState.isGitHubOrigin
+    ) {
+      new Notice(
+        "This file target uses a non-GitHub origin. v1 supports GitHub remotes only.",
+        12000,
+      );
       return;
     }
 
@@ -846,12 +1016,20 @@ export default class VaultPublisherPlugin extends Plugin {
 
       const repoUrl = this.getRepoWebUrl(linked.repoName, linked.originUrl);
       const suffix = linked.pushed ? "" : " (linked remote, no commits yet)";
-      this.showPublishedRepoNotice(`Published file ${vaultPath} ->`, repoUrl, suffix, true);
+      this.showPublishedRepoNotice(
+        `Published file ${vaultPath} ->`,
+        repoUrl,
+        suffix,
+        true,
+      );
       return;
     }
 
     new Notice(`Pushing file repo ${vaultPath}...`, 5000);
-    const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
+    const pushResult = await this.gitService.pushDirectory(
+      mirrorAbsolutePath,
+      fileStem,
+    );
     if (pushResult.status === "failed") {
       new Notice(pushResult.error ?? "File push failed.", 12000);
       return;
@@ -859,9 +1037,14 @@ export default class VaultPublisherPlugin extends Plugin {
 
     const repoName =
       existingRecord?.repoName ||
-      (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) ||
+      (repoState.originUrl
+        ? parseRepoNameFromOrigin(repoState.originUrl)
+        : null) ||
       baseRepoName;
-    const nextLastPushed = pushResult.status === "pushed" ? nowIso : existingRecord?.lastPushed ?? nowIso;
+    const nextLastPushed =
+      pushResult.status === "pushed"
+        ? nowIso
+        : (existingRecord?.lastPushed ?? nowIso);
 
     this.configStore.upsertTarget({
       targetType: "file",
@@ -882,21 +1065,27 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new Notice(`Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`, 9000);
+    new Notice(
+      `Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`,
+      9000,
+    );
   }
 
   private summarizeResults(results: PushRepoResult[]): PushAllSummary {
     return {
       total: results.length,
       pushed: results.filter((result) => result.status === "pushed").length,
-      upToDate: results.filter((result) => result.status === "up_to_date").length,
+      upToDate: results.filter((result) => result.status === "up_to_date")
+        .length,
       skipped: results.filter((result) => result.status === "skipped").length,
       failed: results.filter((result) => result.status === "failed").length,
       results,
     };
   }
 
-  private async pushManagedFileTargets(vaultBasePath: string): Promise<{ results: PushRepoResult[]; changed: boolean }> {
+  private async pushManagedFileTargets(
+    vaultBasePath: string,
+  ): Promise<{ results: PushRepoResult[]; changed: boolean }> {
     const records = this.configStore.getTargetsByType("file");
     const results: PushRepoResult[] = [];
     let changed = false;
@@ -923,9 +1112,18 @@ export default class VaultPublisherPlugin extends Plugin {
         continue;
       }
 
-      const sourceAbsolutePath = absolutePathForVaultPath(vaultBasePath, record.vaultPath);
-      const mirrorAbsolutePath = absolutePathForVaultPath(vaultBasePath, record.mirrorPath);
-      if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
+      const sourceAbsolutePath = absolutePathForVaultPath(
+        vaultBasePath,
+        record.vaultPath,
+      );
+      const mirrorAbsolutePath = absolutePathForVaultPath(
+        vaultBasePath,
+        record.mirrorPath,
+      );
+      if (
+        !ensureInsideVault(vaultBasePath, sourceAbsolutePath) ||
+        !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)
+      ) {
         results.push({
           targetType: "file",
           vaultPath: record.vaultPath,
@@ -936,10 +1134,19 @@ export default class VaultPublisherPlugin extends Plugin {
       }
 
       try {
-        await this.gitService.syncSingleFileToRepo(sourceAbsolutePath, mirrorAbsolutePath, record.mirrorFileName);
+        await this.gitService.syncSingleFileToRepo(
+          sourceAbsolutePath,
+          mirrorAbsolutePath,
+          record.mirrorFileName,
+        );
 
-        let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
-        if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
+        let repoState =
+          await this.gitService.detectRepoState(mirrorAbsolutePath);
+        if (
+          repoState.hasOrigin &&
+          repoState.originUrl &&
+          !repoState.isGitHubOrigin
+        ) {
           results.push({
             targetType: "file",
             vaultPath: record.vaultPath,
@@ -984,7 +1191,10 @@ export default class VaultPublisherPlugin extends Plugin {
           continue;
         }
 
-        const pushResult = await this.gitService.pushDirectory(mirrorAbsolutePath, fileStem);
+        const pushResult = await this.gitService.pushDirectory(
+          mirrorAbsolutePath,
+          fileStem,
+        );
         results.push({
           ...pushResult,
           targetType: "file",
@@ -994,13 +1204,16 @@ export default class VaultPublisherPlugin extends Plugin {
 
         const repoName =
           record.repoName ||
-          (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) ||
+          (repoState.originUrl
+            ? parseRepoNameFromOrigin(repoState.originUrl)
+            : null) ||
           baseRepoName;
         this.configStore.upsertTarget({
           ...record,
           repoName,
           originUrl: repoState.originUrl ?? record.originUrl,
-          lastPushed: pushResult.status === "pushed" ? nowIso : record.lastPushed,
+          lastPushed:
+            pushResult.status === "pushed" ? nowIso : record.lastPushed,
         });
         changed = true;
       } catch (error: unknown) {
@@ -1037,9 +1250,11 @@ export default class VaultPublisherPlugin extends Plugin {
     new Notice("Pushing all repositories...", 5000);
     const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) =>
-        this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",
+        this.configStore.findTarget("directory", vaultPath)?.visibility ??
+        "private",
       resolveBaseRepoName: (vaultPath) =>
-        this.configStore.findTarget("directory", vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath),
+        this.configStore.findTarget("directory", vaultPath)?.repoName ??
+        folderNameFromVaultPath(vaultPath),
     });
 
     const nowIso = new Date().toISOString();
@@ -1055,9 +1270,13 @@ export default class VaultPublisherPlugin extends Plugin {
         continue;
       }
 
-      const existing = this.configStore.findTarget("directory", result.vaultPath);
+      const existing = this.configStore.findTarget(
+        "directory",
+        result.vaultPath,
+      );
       const visibility = existing?.visibility ?? "private";
-      const lastPushed = result.status === "pushed" ? nowIso : existing?.lastPushed ?? nowIso;
+      const lastPushed =
+        result.status === "pushed" ? nowIso : (existing?.lastPushed ?? nowIso);
 
       this.configStore.upsertTarget({
         targetType: "directory",
@@ -1080,7 +1299,10 @@ export default class VaultPublisherPlugin extends Plugin {
       await this.configStore.save();
     }
 
-    const summary = this.summarizeResults([...directorySummary.results, ...filePush.results]);
+    const summary = this.summarizeResults([
+      ...directorySummary.results,
+      ...filePush.results,
+    ]);
     if (summary.total === 0) {
       new Notice("No standalone or managed file repositories found to push.");
       return;
@@ -1091,11 +1313,16 @@ export default class VaultPublisherPlugin extends Plugin {
       10000,
     );
 
-    const failures = summary.results.filter((result) => result.status === "failed");
+    const failures = summary.results.filter(
+      (result) => result.status === "failed",
+    );
     if (failures.length > 0) {
       const details = failures
         .slice(0, 3)
-        .map((failure) => `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`)
+        .map(
+          (failure) =>
+            `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`,
+        )
         .join(" | ");
       new Notice(`Push failures: ${details}`, 12000);
     }
@@ -1107,11 +1334,296 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
+    if (error instanceof StaticSitePublishError) {
+      new Notice(error.message, 15000);
+      return;
+    }
+
     if (error instanceof Error) {
       new Notice(error.message, 12000);
       return;
     }
 
     new Notice("An unknown error occurred.", 12000);
+  }
+
+  // --- Static Site Hosts (experimental) ---
+
+  getConfigStore(): ConfigStore {
+    return this.configStore;
+  }
+
+  async saveConfig(): Promise<void> {
+    await this.configStore.save();
+  }
+
+  getStaticSiteHosts(): StaticSiteHostConfig[] {
+    return this.configStore.getStaticSiteHosts();
+  }
+
+  async upsertStaticSiteHost(host: StaticSiteHostConfig): Promise<void> {
+    this.configStore.upsertStaticSiteHost(host);
+    await this.configStore.save();
+  }
+
+  async removeStaticSiteHost(hostId: string): Promise<boolean> {
+    const removed = this.configStore.removeStaticSiteHost(hostId);
+    if (removed) {
+      await this.configStore.save();
+    }
+    return removed;
+  }
+
+  private async resolveStaticSiteHost(
+    frontmatterHostId?: string,
+  ): Promise<StaticSiteHostConfig | null> {
+    const hosts = this.configStore.getStaticSiteHosts();
+    if (hosts.length === 0) {
+      new Notice(
+        "No static site hosts configured. Open Vault Publisher settings and add a host under 'Static Site Hosts'.",
+        10000,
+      );
+      return null;
+    }
+
+    if (frontmatterHostId) {
+      const byId = hosts.find((host) => host.id === frontmatterHostId);
+      if (byId) {
+        return byId;
+      }
+      new Notice(
+        `Frontmatter 'host' is '${frontmatterHostId}' but no host with that id is configured. Pick one manually.`,
+        10000,
+      );
+    }
+
+    if (hosts.length === 1) {
+      return hosts[0];
+    }
+
+    return new StaticSiteHostPickerModal(this.app, hosts).openAndGetValue();
+  }
+
+  private async handlePublishToStaticSite(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new Notice(
+        "Open the Markdown note you want to publish, then run this command.",
+        8000,
+      );
+      return;
+    }
+
+    const cache = this.app.metadataCache.getFileCache(activeFile);
+    const frontmatter = cache?.frontmatter ?? {};
+    const rawHostId =
+      typeof (frontmatter as Record<string, unknown>).host === "string"
+        ? ((frontmatter as Record<string, unknown>).host as string)
+        : undefined;
+
+    const host = await this.resolveStaticSiteHost(rawHostId);
+    if (!host) {
+      return;
+    }
+
+    const fileContent = await this.app.vault.read(activeFile);
+    const markdownBody = this.stripFrontmatter(fileContent);
+    const previousRecord = this.configStore.findStaticSitePublish(
+      host.id,
+      activeFile.path,
+    );
+
+    new Notice(`Publishing ${activeFile.path} to ${host.name}...`, 4000);
+
+    try {
+      const result = await this.staticSitePublisher.publish({
+        host,
+        frontmatter,
+        markdownBody,
+        vaultPath: activeFile.path,
+        previousRecord,
+      });
+
+      const record: StaticSitePublishRecord = {
+        hostId: host.id,
+        vaultPath: activeFile.path,
+        slug: result.slug,
+        lastPublished: new Date().toISOString(),
+        lastCommitSha: result.commitSha ?? undefined,
+      };
+      this.configStore.upsertStaticSitePublish(record);
+      await this.configStore.save();
+
+      for (const warning of result.warnings) {
+        new Notice(`Warning: ${warning}`, 8000);
+      }
+
+      if (result.status === "unchanged") {
+        new Notice(`Already up to date on ${host.name}.`, 6000);
+        return;
+      }
+
+      if (result.publicUrl) {
+        this.showStaticSitePublishedNotice(
+          host.name,
+          result.publicUrl,
+          result.removedPreviousSlug,
+        );
+      } else {
+        const suffix = result.removedPreviousSlug
+          ? ` (old slug '${result.removedPreviousSlug}' removed)`
+          : "";
+        new Notice(
+          `Published to ${host.name}: ${result.postRelativePathFromRepo}${suffix}`,
+          10000,
+        );
+      }
+    } catch (error: unknown) {
+      this.showCommandError(error);
+    }
+  }
+
+  private async handleUnpublishFromStaticSite(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new Notice(
+        "Open the Markdown note you want to unpublish, then run this command.",
+        8000,
+      );
+      return;
+    }
+
+    const publishes = this.configStore
+      .getStaticSitePublishes()
+      .filter(
+        (record) => record.vaultPath === normalizeVaultPath(activeFile.path),
+      );
+    if (publishes.length === 0) {
+      new Notice(
+        "This note has not been published to any static site host.",
+        8000,
+      );
+      return;
+    }
+
+    let record = publishes[0];
+    if (publishes.length > 1) {
+      const hosts = this.configStore.getStaticSiteHosts();
+      const candidateHosts = publishes
+        .map((publish) => hosts.find((host) => host.id === publish.hostId))
+        .filter((host): host is StaticSiteHostConfig => host !== undefined);
+      const chosenHost = await new StaticSiteHostPickerModal(
+        this.app,
+        candidateHosts,
+      ).openAndGetValue();
+      if (!chosenHost) {
+        return;
+      }
+      const matching = publishes.find(
+        (publish) => publish.hostId === chosenHost.id,
+      );
+      if (!matching) {
+        return;
+      }
+      record = matching;
+    }
+
+    const host = this.configStore.findStaticSiteHost(record.hostId);
+    if (!host) {
+      new Notice(
+        `Host '${record.hostId}' is no longer configured. Remove the publish record manually in settings.`,
+        10000,
+      );
+      return;
+    }
+
+    const confirmed = await new StaticSiteUnpublishConfirmModal(
+      this.app,
+      host,
+      record,
+    ).openAndConfirm();
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      const result = await this.staticSitePublisher.unpublish({ host, record });
+
+      this.configStore.removeStaticSitePublish(host.id, record.vaultPath);
+      await this.configStore.save();
+
+      if (result.status === "not_found") {
+        new Notice(
+          `Post file not found on disk; publish record removed.`,
+          8000,
+        );
+        return;
+      }
+
+      new Notice(`Unpublished from ${host.name}.`, 8000);
+    } catch (error: unknown) {
+      this.showCommandError(error);
+    }
+  }
+
+  private stripFrontmatter(fileContent: string): string {
+    if (!fileContent.startsWith("---")) {
+      return fileContent;
+    }
+
+    const match = fileContent.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/);
+    if (!match) {
+      return fileContent;
+    }
+    return fileContent.slice(match[0].length);
+  }
+
+  private showStaticSitePublishedNotice(
+    hostName: string,
+    url: string,
+    removedPreviousSlug: string | null,
+  ): void {
+    const fragment = document.createDocumentFragment();
+    fragment.append(`Published to ${hostName}: `);
+
+    const linkEl = document.createElement("a");
+    linkEl.href = url;
+    linkEl.textContent = url;
+    linkEl.target = "_blank";
+    linkEl.rel = "noopener noreferrer";
+    linkEl.className = "vault-publisher-notice-link";
+    fragment.append(linkEl);
+
+    if (removedPreviousSlug) {
+      fragment.append(` (old slug '${removedPreviousSlug}' removed)`);
+    }
+
+    const notice = new Notice(fragment, 10000);
+    notice.noticeEl.addClass("vault-publisher-clickable-notice");
+    notice.noticeEl.setAttribute("aria-label", `Open ${url}`);
+    notice.noticeEl.title = "Open post in browser";
+
+    const openLink = (event?: Event): void => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      void this.openExternalUrl(url);
+      notice.hide();
+    };
+
+    linkEl.addEventListener("click", (event) => {
+      openLink(event);
+    });
+
+    notice.noticeEl.addEventListener("click", (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (event.target instanceof HTMLElement && event.target.closest("a")) {
+        return;
+      }
+      openLink(event);
+    });
+
+    void this.openExternalUrl(url);
   }
 }
