@@ -9,6 +9,7 @@ import {
   DirectoryPickerModal,
   PublishTargetItem,
 } from "./modals/directory-picker-modal";
+import { PostFrontmatterModal } from "./modals/post-frontmatter-modal";
 import { StaticSiteHostPickerModal } from "./modals/static-site-host-picker-modal";
 import { StaticSiteUnpublishConfirmModal } from "./modals/static-site-unpublish-confirm-modal";
 import { VisibilityModal } from "./modals/visibility-modal";
@@ -30,6 +31,8 @@ import {
   StaticSiteHostConfig,
   StaticSitePublishRecord,
 } from "./types";
+import { validatePostFrontmatter } from "./utils/frontmatter";
+import { upsertFrontmatterFields } from "./utils/frontmatter-io";
 import { isGitHubOrigin, originToWebUrl } from "./utils/github-url";
 import {
   absolutePathForVaultPath,
@@ -39,6 +42,7 @@ import {
   isVaultRoot,
   normalizeVaultPath,
 } from "./utils/path-utils";
+import { computePostDefaults, mergeDefaults } from "./utils/post-defaults";
 import {
   parseRepoNameFromOrigin,
   sanitizeRepoName,
@@ -1415,10 +1419,13 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     const cache = this.app.metadataCache.getFileCache(activeFile);
-    const frontmatter = cache?.frontmatter ?? {};
+    const rawFrontmatter = (cache?.frontmatter ?? {}) as Record<
+      string,
+      unknown
+    >;
     const rawHostId =
-      typeof (frontmatter as Record<string, unknown>).host === "string"
-        ? ((frontmatter as Record<string, unknown>).host as string)
+      typeof rawFrontmatter.host === "string"
+        ? (rawFrontmatter.host as string)
         : undefined;
 
     const host = await this.resolveStaticSiteHost(rawHostId);
@@ -1426,8 +1433,73 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
-    const fileContent = await this.app.vault.read(activeFile);
-    const markdownBody = this.stripFrontmatter(fileContent);
+    let fileContent = await this.app.vault.read(activeFile);
+    let markdownBody = this.stripFrontmatter(fileContent);
+    let frontmatter: Record<string, unknown> = rawFrontmatter;
+
+    const preflight = validatePostFrontmatter(frontmatter);
+    if (!preflight.ok) {
+      const hosts = this.configStore.getStaticSiteHosts();
+      const fileBasename = activeFile.basename;
+      const defaults = computePostDefaults({
+        fileBasename,
+        body: markdownBody,
+      });
+      const merged = mergeDefaults(frontmatter, defaults);
+
+      const modal = new PostFrontmatterModal(this.app, {
+        hosts,
+        defaults: {
+          title: merged.title,
+          slug: merged.slug,
+          date: merged.date,
+          description: merged.description,
+          hostId: merged.hostId ?? host.id,
+        },
+        noteBasename: activeFile.basename,
+      });
+
+      const outcome = await modal.openAndGetValue();
+      if (!outcome) {
+        return;
+      }
+
+      if (outcome.values.hostId && outcome.values.hostId !== host.id) {
+        const alternate = this.configStore.findStaticSiteHost(
+          outcome.values.hostId,
+        );
+        if (alternate) {
+          Object.assign(host, alternate);
+        }
+      }
+
+      const nextFrontmatter: Record<string, unknown> = {
+        ...frontmatter,
+        title: outcome.values.title,
+        slug: outcome.values.slug,
+        date: outcome.values.date,
+        description: outcome.values.description,
+      };
+      if (outcome.values.hostId) {
+        nextFrontmatter.host = outcome.values.hostId;
+      }
+
+      if (outcome.persistToNote) {
+        const updatedContent = upsertFrontmatterFields(fileContent, {
+          title: outcome.values.title,
+          slug: outcome.values.slug,
+          date: outcome.values.date,
+          description: outcome.values.description,
+          host: outcome.values.hostId,
+        });
+        await this.app.vault.modify(activeFile, updatedContent);
+        fileContent = updatedContent;
+        markdownBody = this.stripFrontmatter(updatedContent);
+      }
+
+      frontmatter = nextFrontmatter;
+    }
+
     const previousRecord = this.configStore.findStaticSitePublish(
       host.id,
       activeFile.path,

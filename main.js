@@ -40,7 +40,7 @@ module.exports = __toCommonJS(main_exports);
 var import_node_crypto = __toESM(require("node:crypto"), 1);
 var import_promises3 = __toESM(require("node:fs/promises"), 1);
 var import_node_path4 = __toESM(require("node:path"), 1);
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/constants.ts
 var MIRROR_ROOT = ".obsidian/plugins/vault-publisher/mirrors";
@@ -248,9 +248,173 @@ var DirectoryPickerModal = class extends import_obsidian.FuzzySuggestModal {
   }
 };
 
-// src/modals/static-site-host-picker-modal.ts
+// src/modals/post-frontmatter-modal.ts
 var import_obsidian2 = require("obsidian");
-var StaticSiteHostPickerModal = class extends import_obsidian2.FuzzySuggestModal {
+
+// src/utils/slug.ts
+var RESERVED_SLUGS = /* @__PURE__ */ new Set(["blog", "feed", "static", "assets", "public"]);
+function sanitizeSlug(input) {
+  const lowered = input.trim().toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+  const dashed = lowered.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return dashed;
+}
+function isReservedSlug(slug) {
+  return RESERVED_SLUGS.has(slug);
+}
+function isValidSlug(slug) {
+  if (slug.length === 0 || slug.length > 120) {
+    return false;
+  }
+  if (isReservedSlug(slug)) {
+    return false;
+  }
+  return /^[a-z0-9][a-z0-9-]*$/.test(slug);
+}
+
+// src/modals/post-frontmatter-modal.ts
+var PostFrontmatterModal = class extends import_obsidian2.Modal {
+  constructor(app, options) {
+    super(app);
+    this.persistToNote = true;
+    this.didResolve = false;
+    this.options = options;
+    this.working = { ...options.defaults };
+    this.slugEdited = sanitizeSlug(options.defaults.title) !== options.defaults.slug;
+  }
+  onOpen() {
+    this.titleEl.setText(
+      `Publish to Static Site \u2014 ${this.options.noteBasename}`
+    );
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("vault-publisher-settings");
+    contentEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: "Review the post metadata. Defaults are filled in from the filename and first paragraph. Saving persists these fields as YAML frontmatter at the top of your note."
+    });
+    let slugInput = null;
+    new import_obsidian2.Setting(contentEl).setName("Title").setDesc("Displayed as the post heading and <title>.").addText((text) => {
+      text.setValue(this.working.title);
+      text.inputEl.style.width = "100%";
+      text.onChange((value) => {
+        this.working.title = value;
+        if (!this.slugEdited) {
+          const derived = sanitizeSlug(value);
+          this.working.slug = derived;
+          slugInput?.setValue(derived);
+        }
+      });
+    });
+    new import_obsidian2.Setting(contentEl).setName("Slug").setDesc(
+      "URL segment. Lowercase letters, numbers, and dashes only. Reserved names (blog, feed, static, assets, public) are not allowed."
+    ).addText((text) => {
+      slugInput = text;
+      text.setValue(this.working.slug);
+      text.inputEl.style.width = "100%";
+      text.onChange((value) => {
+        this.slugEdited = true;
+        this.working.slug = value;
+      });
+    });
+    new import_obsidian2.Setting(contentEl).setName("Date").setDesc(
+      "Accepts YYYY-MM-DD or YYYY-MM-DDTHH:MMZ. Appears in the post's <time> element."
+    ).addText((text) => {
+      text.setValue(this.working.date);
+      text.inputEl.style.width = "100%";
+      text.onChange((value) => {
+        this.working.date = value;
+      });
+    });
+    new import_obsidian2.Setting(contentEl).setName("Description").setDesc(
+      "Short summary used in <meta> tags. Keep it under ~200 characters for social previews."
+    ).addTextArea((textarea) => {
+      textarea.setValue(this.working.description);
+      textarea.inputEl.rows = 3;
+      textarea.inputEl.style.width = "100%";
+      textarea.onChange((value) => {
+        this.working.description = value;
+      });
+    });
+    if (this.options.hosts.length > 1) {
+      new import_obsidian2.Setting(contentEl).setName("Host").setDesc("Which static site host to publish to.").addDropdown((dropdown) => {
+        for (const host of this.options.hosts) {
+          dropdown.addOption(host.id, `${host.name} (${host.id})`);
+        }
+        const initial = this.working.hostId && this.options.hosts.some((h) => h.id === this.working.hostId) ? this.working.hostId : this.options.hosts[0].id;
+        this.working.hostId = initial;
+        dropdown.setValue(initial);
+        dropdown.onChange((value) => {
+          this.working.hostId = value;
+        });
+      });
+    }
+    new import_obsidian2.Setting(contentEl).setName("Write frontmatter back to the note").setDesc(
+      "Recommended. Inserts these fields as YAML frontmatter so they persist for future edits."
+    ).addToggle((toggle) => {
+      toggle.setValue(this.persistToNote);
+      toggle.onChange((value) => {
+        this.persistToNote = value;
+      });
+    });
+    new import_obsidian2.Setting(contentEl).addButton((button) => {
+      button.setButtonText("Cancel").onClick(() => {
+        this.finish(null);
+      });
+    }).addButton((button) => {
+      button.setCta().setButtonText("Publish").onClick(() => {
+        const error = this.validate();
+        if (error) {
+          new import_obsidian2.Notice(error, 8e3);
+          return;
+        }
+        this.finish({
+          values: {
+            ...this.working,
+            slug: sanitizeSlug(this.working.slug)
+          },
+          persistToNote: this.persistToNote
+        });
+      });
+    });
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.didResolve) {
+      this.resolveResult?.(null);
+    }
+  }
+  openAndGetValue() {
+    return new Promise((resolve) => {
+      this.resolveResult = resolve;
+      this.open();
+    });
+  }
+  finish(value) {
+    this.didResolve = true;
+    this.resolveResult?.(value);
+    this.close();
+  }
+  validate() {
+    if (!this.working.title.trim()) {
+      return "Title is required.";
+    }
+    const slug = sanitizeSlug(this.working.slug);
+    if (!isValidSlug(slug)) {
+      return `Slug '${this.working.slug}' is invalid. Use lowercase letters, numbers, and dashes; avoid reserved names.`;
+    }
+    if (!this.working.date.trim()) {
+      return "Date is required.";
+    }
+    if (!this.working.description.trim()) {
+      return "Description is required.";
+    }
+    return null;
+  }
+};
+
+// src/modals/static-site-host-picker-modal.ts
+var import_obsidian3 = require("obsidian");
+var StaticSiteHostPickerModal = class extends import_obsidian3.FuzzySuggestModal {
   constructor(app, hosts) {
     super(app);
     this.didChoose = false;
@@ -287,8 +451,8 @@ var StaticSiteHostPickerModal = class extends import_obsidian2.FuzzySuggestModal
 };
 
 // src/modals/static-site-unpublish-confirm-modal.ts
-var import_obsidian3 = require("obsidian");
-var StaticSiteUnpublishConfirmModal = class extends import_obsidian3.Modal {
+var import_obsidian4 = require("obsidian");
+var StaticSiteUnpublishConfirmModal = class extends import_obsidian4.Modal {
   constructor(app, host, record) {
     super(app);
     this.didResolve = false;
@@ -311,7 +475,7 @@ var StaticSiteUnpublishConfirmModal = class extends import_obsidian3.Modal {
     details.createEl("li", {
       text: `Will delete: ${this.host.siteSubdir.replace(/^\/+|\/+$/g, "")}/${this.record.slug}/`
     });
-    new import_obsidian3.Setting(contentEl).addButton((button) => {
+    new import_obsidian4.Setting(contentEl).addButton((button) => {
       button.setButtonText("Cancel").onClick(() => {
         this.finish(false);
       });
@@ -342,8 +506,8 @@ var StaticSiteUnpublishConfirmModal = class extends import_obsidian3.Modal {
 };
 
 // src/modals/visibility-modal.ts
-var import_obsidian4 = require("obsidian");
-var VisibilityModal = class extends import_obsidian4.Modal {
+var import_obsidian5 = require("obsidian");
+var VisibilityModal = class extends import_obsidian5.Modal {
   constructor(app) {
     super(app);
     this.selected = null;
@@ -356,19 +520,19 @@ var VisibilityModal = class extends import_obsidian4.Modal {
     contentEl.createEl("p", {
       text: "Choose visibility for this repository."
     });
-    const visibilitySetting = new import_obsidian4.Setting(contentEl).setName("Visibility").setDesc("Required: pick one option");
+    const visibilitySetting = new import_obsidian5.Setting(contentEl).setName("Visibility").setDesc("Required: pick one option");
     const buttonContainer = visibilitySetting.controlEl.createDiv({
       cls: "vault-publisher-visibility-buttons"
     });
-    this.publicButton = new import_obsidian4.ButtonComponent(buttonContainer).setButtonText("Public").onClick(() => {
+    this.publicButton = new import_obsidian5.ButtonComponent(buttonContainer).setButtonText("Public").onClick(() => {
       this.selected = "public";
       this.refreshSelectionState();
     });
-    this.privateButton = new import_obsidian4.ButtonComponent(buttonContainer).setButtonText("Private").onClick(() => {
+    this.privateButton = new import_obsidian5.ButtonComponent(buttonContainer).setButtonText("Private").onClick(() => {
       this.selected = "private";
       this.refreshSelectionState();
     });
-    new import_obsidian4.Setting(contentEl).addButton((button) => {
+    new import_obsidian5.Setting(contentEl).addButton((button) => {
       button.setButtonText("Cancel").onClick(() => {
         this.finish(null);
       });
@@ -1598,26 +1762,6 @@ async function buildRepoInventory(options) {
 // src/services/static-site-publisher.ts
 var import_promises2 = __toESM(require("node:fs/promises"), 1);
 var import_node_path3 = __toESM(require("node:path"), 1);
-
-// src/utils/slug.ts
-var RESERVED_SLUGS = /* @__PURE__ */ new Set(["blog", "feed", "static", "assets", "public"]);
-function sanitizeSlug(input) {
-  const lowered = input.trim().toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
-  const dashed = lowered.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  return dashed;
-}
-function isReservedSlug(slug) {
-  return RESERVED_SLUGS.has(slug);
-}
-function isValidSlug(slug) {
-  if (slug.length === 0 || slug.length > 120) {
-    return false;
-  }
-  if (isReservedSlug(slug)) {
-    return false;
-  }
-  return /^[a-z0-9][a-z0-9-]*$/.test(slug);
-}
 
 // src/utils/frontmatter.ts
 function asString(value) {
@@ -3436,10 +3580,10 @@ ${commandError.stdout}`.toLowerCase();
 };
 
 // src/settings/vault-publisher-setting-tab.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/modals/static-site-host-modal.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 function generateHostId(name) {
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const random = Math.random().toString(36).slice(2, 8);
@@ -3451,7 +3595,7 @@ function cloneHost(host) {
     tokens: { ...host.tokens }
   };
 }
-var StaticSiteHostModal = class extends import_obsidian5.Modal {
+var StaticSiteHostModal = class extends import_obsidian6.Modal {
   constructor(app, initial) {
     super(app);
     this.didResolve = false;
@@ -3639,7 +3783,7 @@ var StaticSiteHostModal = class extends import_obsidian5.Modal {
         this.working.publicBaseUrl = value.trim() || void 0;
       }
     });
-    new import_obsidian5.Setting(contentEl).addButton((button) => {
+    new import_obsidian6.Setting(contentEl).addButton((button) => {
       button.setButtonText("Cancel").onClick(() => {
         this.finish(null);
       });
@@ -3647,7 +3791,7 @@ var StaticSiteHostModal = class extends import_obsidian5.Modal {
       button.setCta().setButtonText(this.isNew ? "Add host" : "Save").onClick(() => {
         const validationError = this.validate();
         if (validationError) {
-          new import_obsidian5.Notice(validationError, 8e3);
+          new import_obsidian6.Notice(validationError, 8e3);
           return;
         }
         if (!this.working.id) {
@@ -3675,7 +3819,7 @@ var StaticSiteHostModal = class extends import_obsidian5.Modal {
     this.close();
   }
   addTextSetting(containerEl, options) {
-    new import_obsidian5.Setting(containerEl).setName(options.name).setDesc(options.desc).addText((text) => {
+    new import_obsidian6.Setting(containerEl).setName(options.name).setDesc(options.desc).addText((text) => {
       text.setPlaceholder(options.placeholder);
       text.setValue(options.value);
       text.onChange((value) => {
@@ -3723,8 +3867,8 @@ var StaticSiteHostModal = class extends import_obsidian5.Modal {
 };
 
 // src/modals/unpublish-confirm-modal.ts
-var import_obsidian6 = require("obsidian");
-var UnpublishConfirmModal = class extends import_obsidian6.Modal {
+var import_obsidian7 = require("obsidian");
+var UnpublishConfirmModal = class extends import_obsidian7.Modal {
   constructor(app, entry) {
     super(app);
     this.didResolve = false;
@@ -3750,7 +3894,7 @@ var UnpublishConfirmModal = class extends import_obsidian6.Modal {
     details.createEl("li", {
       text: this.getKeptContentLabel()
     });
-    new import_obsidian6.Setting(contentEl).addButton((button) => {
+    new import_obsidian7.Setting(contentEl).addButton((button) => {
       button.setButtonText("Cancel").onClick(() => {
         this.finish(false);
       });
@@ -3831,7 +3975,7 @@ function createApmOverflowPreset(repoRoot = APM_OVERFLOW_REPO_ROOT) {
 }
 
 // src/settings/vault-publisher-setting-tab.ts
-var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
+var VaultPublisherSettingTab = class extends import_obsidian8.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.renderNonce = 0;
@@ -3912,7 +4056,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
   }
   renderHeader(containerEl, totalCount) {
     const heading = totalCount === void 0 ? "Repository Management" : `Repository Management (${totalCount})`;
-    new import_obsidian7.Setting(containerEl).setName(heading).setDesc(
+    new import_obsidian8.Setting(containerEl).setName(heading).setDesc(
       "View tracked targets, scanned repos, and orphan mirrors. Unpublish deletes the GitHub repo and removes local Git state while keeping vault content."
     ).addButton((button) => {
       button.setButtonText("Refresh").onClick(() => {
@@ -3941,7 +4085,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
     }
   }
   renderEntry(containerEl, entry) {
-    const setting = new import_obsidian7.Setting(containerEl);
+    const setting = new import_obsidian8.Setting(containerEl);
     setting.settingEl.addClass("vault-publisher-entry");
     setting.nameEl.empty();
     const titleEl = setting.nameEl.createDiv({
@@ -4042,7 +4186,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
         this.renderHostEntry(sectionEl, host);
       }
     }
-    new import_obsidian7.Setting(sectionEl).setName("Add custom host").setDesc("Configure a new static site target from scratch.").addButton((button) => {
+    new import_obsidian8.Setting(sectionEl).setName("Add custom host").setDesc("Configure a new static site target from scratch.").addButton((button) => {
       button.setButtonText("Add host").onClick(() => {
         void this.handleAddHost();
       });
@@ -4055,7 +4199,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
     if (hasApmOverflow) {
       return;
     }
-    const setting = new import_obsidian7.Setting(sectionEl).setName("APM Overflow preset").setDesc(
+    const setting = new import_obsidian8.Setting(sectionEl).setName("APM Overflow preset").setDesc(
       `Seed a host pointing at ${APM_OVERFLOW_REPO_ROOT}/apmoverflow using the existing _template.html. You can edit it afterwards.`
     ).addButton((button) => {
       button.setButtonText("Add APM Overflow preset").onClick(() => {
@@ -4067,7 +4211,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
   async handleAddPreset() {
     const preset = createApmOverflowPreset();
     await this.vaultPublisher.upsertStaticSiteHost(preset);
-    new import_obsidian7.Notice(`Added preset: ${preset.name}.`);
+    new import_obsidian8.Notice(`Added preset: ${preset.name}.`);
     this.display();
   }
   async handleAddHost() {
@@ -4077,11 +4221,11 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
       return;
     }
     await this.vaultPublisher.upsertStaticSiteHost(result.host);
-    new import_obsidian7.Notice(`Added host: ${result.host.name}.`);
+    new import_obsidian8.Notice(`Added host: ${result.host.name}.`);
     this.display();
   }
   renderHostEntry(sectionEl, host) {
-    const setting = new import_obsidian7.Setting(sectionEl);
+    const setting = new import_obsidian8.Setting(sectionEl);
     setting.settingEl.addClass("vault-publisher-entry");
     setting.nameEl.empty();
     const titleEl = setting.nameEl.createDiv({
@@ -4138,7 +4282,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
       ...result.host,
       id: host.id
     });
-    new import_obsidian7.Notice(`Updated host: ${host.name}.`);
+    new import_obsidian8.Notice(`Updated host: ${host.name}.`);
     this.display();
   }
   async handleDeleteHost(host) {
@@ -4154,7 +4298,7 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
       configStore.removeStaticSitePublish(host.id, publish.vaultPath);
     }
     await this.vaultPublisher.saveConfig();
-    new import_obsidian7.Notice(`Removed host: ${host.name}.`);
+    new import_obsidian8.Notice(`Removed host: ${host.name}.`);
     this.display();
   }
   getEntryTitle(entry) {
@@ -4232,8 +4376,198 @@ var VaultPublisherSettingTab = class extends import_obsidian7.PluginSettingTab {
   }
 };
 
+// src/utils/frontmatter-io.ts
+var FRONTMATTER_REGEX = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+function splitFrontmatter(fileContent) {
+  if (!fileContent.startsWith("---")) {
+    return { frontmatterRaw: null, body: fileContent };
+  }
+  const match = fileContent.match(FRONTMATTER_REGEX);
+  if (!match) {
+    return { frontmatterRaw: null, body: fileContent };
+  }
+  return {
+    frontmatterRaw: match[1],
+    body: fileContent.slice(match[0].length)
+  };
+}
+function needsQuoting(value) {
+  if (value.length === 0) {
+    return true;
+  }
+  if (/["']/.test(value)) {
+    return true;
+  }
+  if (/[:#&*!|<>?%@`]/.test(value)) {
+    return true;
+  }
+  if (/^[\s'"]/.test(value) || /[\s]$/.test(value)) {
+    return true;
+  }
+  if (/^(true|false|null|yes|no|on|off|~)$/i.test(value)) {
+    return true;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(value)) {
+    return true;
+  }
+  return false;
+}
+function quoteYamlString(value) {
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "\\r").replace(/\n/g, "\\n").replace(/\t/g, "\\t");
+  return `"${escaped}"`;
+}
+function formatYamlValue(value) {
+  return needsQuoting(value) ? quoteYamlString(value) : value;
+}
+function renderFrontmatterBlock(fields) {
+  const lines = [
+    `title: ${formatYamlValue(fields.title)}`,
+    `slug: ${formatYamlValue(fields.slug)}`,
+    `date: ${formatYamlValue(fields.date)}`,
+    `description: ${formatYamlValue(fields.description)}`
+  ];
+  if (fields.host && fields.host.trim().length > 0) {
+    lines.push(`host: ${formatYamlValue(fields.host)}`);
+  }
+  return lines.join("\n");
+}
+function upsertFrontmatterFields(fileContent, fields) {
+  const managedKeys = /* @__PURE__ */ new Set(["title", "slug", "date", "description", "host"]);
+  const { frontmatterRaw, body } = splitFrontmatter(fileContent);
+  const managedLines = renderFrontmatterBlock(fields).split("\n");
+  if (frontmatterRaw === null) {
+    const normalizedBody2 = body.startsWith("\n") ? body : `
+${body}`;
+    return `---
+${managedLines.join("\n")}
+---${normalizedBody2}`;
+  }
+  const preservedLines = [];
+  const originalLines = frontmatterRaw.split(/\r?\n/);
+  let skipContinuation = false;
+  for (const line of originalLines) {
+    const keyMatch = line.match(/^([A-Za-z0-9_-]+)\s*:/);
+    if (keyMatch) {
+      const key = keyMatch[1];
+      if (managedKeys.has(key)) {
+        skipContinuation = true;
+        continue;
+      }
+      skipContinuation = false;
+      preservedLines.push(line);
+      continue;
+    }
+    if (skipContinuation) {
+      if (/^\s+\S/.test(line)) {
+        continue;
+      }
+      skipContinuation = false;
+    }
+    preservedLines.push(line);
+  }
+  while (preservedLines.length > 0 && preservedLines[preservedLines.length - 1].trim() === "") {
+    preservedLines.pop();
+  }
+  const combined = [...managedLines, ...preservedLines].join("\n");
+  const trailingNewline = body.length > 0 ? "" : "";
+  const normalizedBody = body.startsWith("\n") || body.length === 0 ? body : `
+${body}`;
+  return `---
+${combined}
+---${normalizedBody || "\n"}${trailingNewline}`;
+}
+
+// src/utils/post-defaults.ts
+var MAX_DESCRIPTION_LENGTH = 180;
+function titleCaseFromBasename(basename) {
+  const spaced = basename.replace(/[-_]+/g, " ").trim();
+  if (!spaced) {
+    return "Untitled";
+  }
+  return spaced.split(/\s+/).map(
+    (word) => word.length === 0 ? word : word[0].toUpperCase() + word.slice(1)
+  ).join(" ");
+}
+function firstHeadingText(body) {
+  const match = body.match(/^#{1,6}\s+(.+?)\s*$/m);
+  if (!match) {
+    return null;
+  }
+  return match[1].trim();
+}
+function firstParagraphText(body) {
+  const lines = body.split(/\r?\n/);
+  const paragraphLines = [];
+  let started = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      if (started) {
+        break;
+      }
+      continue;
+    }
+    if (trimmed.startsWith("#") || trimmed.startsWith("---") || trimmed.startsWith("```")) {
+      if (started) {
+        break;
+      }
+      continue;
+    }
+    paragraphLines.push(trimmed);
+    started = true;
+  }
+  return paragraphLines.join(" ");
+}
+function stripInlineMarkdown(text) {
+  return text.replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1").replace(/`([^`]+)`/g, "$1").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/__([^_]+)__/g, "$1").replace(/\*([^*]+)\*/g, "$1").replace(/_([^_]+)_/g, "$1").replace(/~~([^~]+)~~/g, "$1").replace(/\s+/g, " ").trim();
+}
+function truncateDescription(text, maxLength) {
+  if (text.length <= maxLength) {
+    return text;
+  }
+  const ellipsis = "...";
+  const budget = Math.max(1, maxLength - ellipsis.length);
+  const cut = text.slice(0, budget);
+  const lastSpace = cut.lastIndexOf(" ");
+  const base = lastSpace > 40 ? cut.slice(0, lastSpace) : cut;
+  return `${base.replace(/[.,;:!?]+$/, "")}${ellipsis}`;
+}
+function computePostDefaults(input) {
+  const heading = firstHeadingText(input.body);
+  const title = heading && heading.length > 0 ? heading : titleCaseFromBasename(input.fileBasename);
+  const slug = sanitizeSlug(title) || sanitizeSlug(input.fileBasename) || "untitled";
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  const date = formatIsoMinutesZ(now);
+  const paragraph = firstParagraphText(input.body);
+  const descriptionRaw = stripInlineMarkdown(paragraph);
+  const description = descriptionRaw.length > 0 ? truncateDescription(descriptionRaw, MAX_DESCRIPTION_LENGTH) : "";
+  return { title, slug, date, description };
+}
+function mergeDefaults(existing, defaults) {
+  const source = existing ?? {};
+  const pick = (key, fallback) => {
+    const raw = source[key];
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      return raw;
+    }
+    if (typeof raw === "number" || typeof raw === "boolean") {
+      return String(raw);
+    }
+    return fallback;
+  };
+  const hostCandidate = source.host ?? source.hostId;
+  const hostId = typeof hostCandidate === "string" && hostCandidate.trim().length > 0 ? hostCandidate : void 0;
+  return {
+    title: pick("title", defaults.title),
+    slug: pick("slug", defaults.slug),
+    date: pick("date", defaults.date),
+    description: pick("description", defaults.description),
+    hostId
+  };
+}
+
 // src/plugin.ts
-var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
+var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.isRunning = false;
@@ -4293,14 +4627,14 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   async ensurePrerequisites() {
     const status = await this.gitService.checkPrerequisites();
     if (!status.ok) {
-      new import_obsidian8.Notice(status.message ?? "Missing required tools.", 12e3);
+      new import_obsidian9.Notice(status.message ?? "Missing required tools.", 12e3);
       return false;
     }
     return true;
   }
   async executeExclusive(action) {
     if (this.isRunning) {
-      new import_obsidian8.Notice("Vault Publisher is already running.");
+      new import_obsidian9.Notice("Vault Publisher is already running.");
       return;
     }
     this.isRunning = true;
@@ -4345,7 +4679,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   }
   async performUnpublishRepo(entry) {
     if (!entry.canUnpublish || !entry.githubRepoSlug) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         entry.disabledReason ?? "This repository cannot be unpublished.",
         1e4
       );
@@ -4353,7 +4687,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     }
     const githubStatus = await this.gitService.checkGitHubPrerequisites();
     if (!githubStatus.ok) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         githubStatus.message ?? "Missing required GitHub tools.",
         12e3
       );
@@ -4381,7 +4715,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     } catch (error) {
       const detail = error instanceof GitCommandError ? error.displayMessage() : error instanceof Error ? error.message : "Unknown local cleanup failure.";
       const remoteMessage2 = remoteResult.status === "deleted" ? `Deleted GitHub repo ${entry.githubRepoSlug}` : `GitHub repo ${entry.githubRepoSlug} was already absent`;
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         `${remoteMessage2}, but local cleanup failed: ${detail}`,
         15e3
       );
@@ -4389,7 +4723,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     }
     const targetLabel = entry.sourceKind === "tracked-file" ? `file ${entry.vaultPath}` : entry.sourceKind === "orphan-mirror" ? `mirror ${entry.localRepoVaultPath}` : `directory ${entry.vaultPath}`;
     const remoteMessage = remoteResult.status === "deleted" ? `Deleted GitHub repo ${entry.githubRepoSlug}` : `GitHub repo ${entry.githubRepoSlug} was already absent`;
-    new import_obsidian8.Notice(`Unpublished ${targetLabel}. ${remoteMessage}.`, 1e4);
+    new import_obsidian9.Notice(`Unpublished ${targetLabel}. ${remoteMessage}.`, 1e4);
     return true;
   }
   isSelectableDirectory(vaultPath) {
@@ -4448,14 +4782,14 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       if (!normalizedPath) {
         continue;
       }
-      if (item instanceof import_obsidian8.TFolder) {
+      if (item instanceof import_obsidian9.TFolder) {
         if (!this.isSelectableDirectory(normalizedPath)) {
           continue;
         }
         targets.push({ path: normalizedPath, kind: "directory" });
         continue;
       }
-      if (item instanceof import_obsidian8.TFile) {
+      if (item instanceof import_obsidian9.TFile) {
         if (!this.isSelectableFile(normalizedPath)) {
           continue;
         }
@@ -4480,7 +4814,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   resolveTargetSelection(item) {
     const normalizedPath = normalizeVaultPath(item.path);
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (item.kind === "file" || abstractItem instanceof import_obsidian8.TFile) {
+    if (item.kind === "file" || abstractItem instanceof import_obsidian9.TFile) {
       return {
         targetType: "file",
         vaultPath: normalizedPath
@@ -4509,13 +4843,13 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       return null;
     }
     const abstractItem = this.app.vault.getAbstractFileByPath(normalizedPath);
-    if (abstractItem instanceof import_obsidian8.TFolder && this.isSelectableDirectory(normalizedPath)) {
+    if (abstractItem instanceof import_obsidian9.TFolder && this.isSelectableDirectory(normalizedPath)) {
       return {
         targetType: "directory",
         vaultPath: normalizedPath
       };
     }
-    if (abstractItem instanceof import_obsidian8.TFile && this.isSelectableFile(normalizedPath)) {
+    if (abstractItem instanceof import_obsidian9.TFile && this.isSelectableFile(normalizedPath)) {
       return {
         targetType: "file",
         vaultPath: normalizedPath
@@ -4665,7 +4999,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   async chooseTarget() {
     const selectableTargets = this.listSelectableTargets();
     if (selectableTargets.length === 0) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "No publishable files or subdirectories were found in this vault."
       );
       return null;
@@ -4688,7 +5022,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
         if (resolvedFromQuery) {
           return resolvedFromQuery;
         }
-        new import_obsidian8.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
+        new import_obsidian9.Notice(`No matching target found for: ${unmatchedQuery}`, 6e3);
       }
       return null;
     }
@@ -4742,7 +5076,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     if (suffix) {
       fragment.append(suffix.startsWith(" ") ? suffix : ` ${suffix}`);
     }
-    notice = new import_obsidian8.Notice(fragment, 1e4);
+    notice = new import_obsidian9.Notice(fragment, 1e4);
     notice.noticeEl.addClass("vault-publisher-clickable-notice");
     notice.noticeEl.setAttribute("aria-label", `Open ${repoUrl}`);
     notice.noticeEl.title = "Open repository in browser";
@@ -4783,12 +5117,12 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       return;
     }
     if (target.targetType === "directory" && isVaultRoot(target.vaultPath)) {
-      new import_obsidian8.Notice("Vault root cannot be published. Select a subdirectory.");
+      new import_obsidian9.Notice("Vault root cannot be published. Select a subdirectory.");
       return;
     }
     const vaultBasePath = this.getVaultBasePath();
     if (!vaultBasePath) {
-      new import_obsidian8.Notice("Could not resolve the vault base path.");
+      new import_obsidian9.Notice("Could not resolve the vault base path.");
       return;
     }
     if (target.targetType === "directory") {
@@ -4800,7 +5134,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   async publishDirectoryTarget(vaultPath, vaultBasePath) {
     const targetPath = absolutePathForVaultPath(vaultBasePath, vaultPath);
     if (!ensureInsideVault(vaultBasePath, targetPath)) {
-      new import_obsidian8.Notice("Selected path is outside the vault. Aborting.");
+      new import_obsidian9.Notice("Selected path is outside the vault. Aborting.");
       return;
     }
     const existingRecord = this.configStore.findTarget("directory", vaultPath);
@@ -4814,7 +5148,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     );
     const repoState = await this.gitService.detectRepoState(targetPath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "This directory uses a non-GitHub origin. v1 supports GitHub remotes only.",
         1e4
       );
@@ -4822,7 +5156,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasLocalGit || !repoState.hasOrigin) {
-      new import_obsidian8.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
+      new import_obsidian9.Notice(`Connecting directory ${vaultPath} to GitHub...`, 5e3);
       await this.gitService.ensureGitignore(targetPath);
       if (!repoState.hasLocalGit) {
         await this.gitService.initRepo(targetPath);
@@ -4853,13 +5187,13 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       );
       return;
     }
-    new import_obsidian8.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
+    new import_obsidian9.Notice(`Pushing directory repo ${vaultPath}...`, 5e3);
     const pushResult = await this.gitService.pushDirectory(
       targetPath,
       folderName
     );
     if (pushResult.status === "failed") {
-      new import_obsidian8.Notice(pushResult.error ?? "Push failed.", 12e3);
+      new import_obsidian9.Notice(pushResult.error ?? "Push failed.", 12e3);
       return;
     }
     const repoName = existingRecord?.repoName || (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) || baseRepoName;
@@ -4875,19 +5209,19 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     });
     await this.configStore.save();
     if (pushResult.status === "up_to_date") {
-      new import_obsidian8.Notice("Already up to date.");
+      new import_obsidian9.Notice("Already up to date.");
       return;
     }
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new import_obsidian8.Notice(
+    new import_obsidian9.Notice(
       `Pushed ${pushResult.changedCount ?? 0} changes to ${repoUrl}`,
       8e3
     );
   }
   async publishFileTarget(vaultPath, vaultBasePath) {
     const sourceFile = this.app.vault.getAbstractFileByPath(vaultPath);
-    if (!(sourceFile instanceof import_obsidian8.TFile)) {
-      new import_obsidian8.Notice(`File not found: ${vaultPath}`);
+    if (!(sourceFile instanceof import_obsidian9.TFile)) {
+      new import_obsidian9.Notice(`File not found: ${vaultPath}`);
       return;
     }
     const existingRecord = this.configStore.findTarget("file", vaultPath);
@@ -4906,7 +5240,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       mirrorPath
     );
     if (!ensureInsideVault(vaultBasePath, sourceAbsolutePath) || !ensureInsideVault(vaultBasePath, mirrorAbsolutePath)) {
-      new import_obsidian8.Notice("File publish path resolved outside vault. Aborting.");
+      new import_obsidian9.Notice("File publish path resolved outside vault. Aborting.");
       return;
     }
     const fileStem = fileStemFromVaultPath(vaultPath);
@@ -4918,7 +5252,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     );
     let repoState = await this.gitService.detectRepoState(mirrorAbsolutePath);
     if (repoState.hasOrigin && repoState.originUrl && !repoState.isGitHubOrigin) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "This file target uses a non-GitHub origin. v1 supports GitHub remotes only.",
         12e3
       );
@@ -4930,7 +5264,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     }
     const nowIso = (/* @__PURE__ */ new Date()).toISOString();
     if (!repoState.hasOrigin) {
-      new import_obsidian8.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
+      new import_obsidian9.Notice(`Connecting file ${vaultPath} to GitHub...`, 5e3);
       const linked = await this.gitService.linkLocalRepoWithoutOrigin(
         mirrorAbsolutePath,
         fileStem,
@@ -4959,13 +5293,13 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       );
       return;
     }
-    new import_obsidian8.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
+    new import_obsidian9.Notice(`Pushing file repo ${vaultPath}...`, 5e3);
     const pushResult = await this.gitService.pushDirectory(
       mirrorAbsolutePath,
       fileStem
     );
     if (pushResult.status === "failed") {
-      new import_obsidian8.Notice(pushResult.error ?? "File push failed.", 12e3);
+      new import_obsidian9.Notice(pushResult.error ?? "File push failed.", 12e3);
       return;
     }
     const repoName = existingRecord?.repoName || (repoState.originUrl ? parseRepoNameFromOrigin(repoState.originUrl) : null) || baseRepoName;
@@ -4983,11 +5317,11 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     });
     await this.configStore.save();
     if (pushResult.status === "up_to_date") {
-      new import_obsidian8.Notice(`File repo already up to date: ${vaultPath}`, 6e3);
+      new import_obsidian9.Notice(`File repo already up to date: ${vaultPath}`, 6e3);
       return;
     }
     const repoUrl = this.getRepoWebUrl(repoName, repoState.originUrl ?? null);
-    new import_obsidian8.Notice(
+    new import_obsidian9.Notice(
       `Pushed ${pushResult.changedCount ?? 0} file changes to ${repoUrl}`,
       9e3
     );
@@ -5008,7 +5342,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     let changed = false;
     for (const record of records) {
       const sourceItem = this.app.vault.getAbstractFileByPath(record.vaultPath);
-      if (!(sourceItem instanceof import_obsidian8.TFile)) {
+      if (!(sourceItem instanceof import_obsidian9.TFile)) {
         results.push({
           targetType: "file",
           vaultPath: record.vaultPath,
@@ -5125,10 +5459,10 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     }
     const vaultBasePath = this.getVaultBasePath();
     if (!vaultBasePath) {
-      new import_obsidian8.Notice("Could not resolve the vault base path.");
+      new import_obsidian9.Notice("Could not resolve the vault base path.");
       return;
     }
-    new import_obsidian8.Notice("Pushing all repositories...", 5e3);
+    new import_obsidian9.Notice("Pushing all repositories...", 5e3);
     const directorySummary = await this.gitService.pushAllRepos(vaultBasePath, {
       resolveVisibility: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.visibility ?? "private",
       resolveBaseRepoName: (vaultPath) => this.configStore.findTarget("directory", vaultPath)?.repoName ?? folderNameFromVaultPath(vaultPath)
@@ -5172,10 +5506,10 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       ...filePush.results
     ]);
     if (summary.total === 0) {
-      new import_obsidian8.Notice("No standalone or managed file repositories found to push.");
+      new import_obsidian9.Notice("No standalone or managed file repositories found to push.");
       return;
     }
-    new import_obsidian8.Notice(
+    new import_obsidian9.Notice(
       `Push All complete: ${summary.pushed} pushed, ${summary.upToDate} up to date, ${summary.failed} failed, ${summary.skipped} skipped.`,
       1e4
     );
@@ -5186,23 +5520,23 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       const details = failures.slice(0, 3).map(
         (failure) => `${failure.targetType}:${failure.vaultPath}: ${failure.error ?? "Unknown error"}`
       ).join(" | ");
-      new import_obsidian8.Notice(`Push failures: ${details}`, 12e3);
+      new import_obsidian9.Notice(`Push failures: ${details}`, 12e3);
     }
   }
   showCommandError(error) {
     if (error instanceof GitCommandError) {
-      new import_obsidian8.Notice(`${error.command} failed: ${error.displayMessage()}`, 15e3);
+      new import_obsidian9.Notice(`${error.command} failed: ${error.displayMessage()}`, 15e3);
       return;
     }
     if (error instanceof StaticSitePublishError) {
-      new import_obsidian8.Notice(error.message, 15e3);
+      new import_obsidian9.Notice(error.message, 15e3);
       return;
     }
     if (error instanceof Error) {
-      new import_obsidian8.Notice(error.message, 12e3);
+      new import_obsidian9.Notice(error.message, 12e3);
       return;
     }
-    new import_obsidian8.Notice("An unknown error occurred.", 12e3);
+    new import_obsidian9.Notice("An unknown error occurred.", 12e3);
   }
   // --- Static Site Hosts (experimental) ---
   getConfigStore() {
@@ -5228,7 +5562,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   async resolveStaticSiteHost(frontmatterHostId) {
     const hosts = this.configStore.getStaticSiteHosts();
     if (hosts.length === 0) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "No static site hosts configured. Open Vault Publisher settings and add a host under 'Static Site Hosts'.",
         1e4
       );
@@ -5239,7 +5573,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       if (byId) {
         return byId;
       }
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         `Frontmatter 'host' is '${frontmatterHostId}' but no host with that id is configured. Pick one manually.`,
         1e4
       );
@@ -5252,26 +5586,83 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   async handlePublishToStaticSite() {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile || activeFile.extension !== "md") {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "Open the Markdown note you want to publish, then run this command.",
         8e3
       );
       return;
     }
     const cache = this.app.metadataCache.getFileCache(activeFile);
-    const frontmatter = cache?.frontmatter ?? {};
-    const rawHostId = typeof frontmatter.host === "string" ? frontmatter.host : void 0;
+    const rawFrontmatter = cache?.frontmatter ?? {};
+    const rawHostId = typeof rawFrontmatter.host === "string" ? rawFrontmatter.host : void 0;
     const host = await this.resolveStaticSiteHost(rawHostId);
     if (!host) {
       return;
     }
-    const fileContent = await this.app.vault.read(activeFile);
-    const markdownBody = this.stripFrontmatter(fileContent);
+    let fileContent = await this.app.vault.read(activeFile);
+    let markdownBody = this.stripFrontmatter(fileContent);
+    let frontmatter = rawFrontmatter;
+    const preflight = validatePostFrontmatter(frontmatter);
+    if (!preflight.ok) {
+      const hosts = this.configStore.getStaticSiteHosts();
+      const fileBasename = activeFile.basename;
+      const defaults = computePostDefaults({
+        fileBasename,
+        body: markdownBody
+      });
+      const merged = mergeDefaults(frontmatter, defaults);
+      const modal = new PostFrontmatterModal(this.app, {
+        hosts,
+        defaults: {
+          title: merged.title,
+          slug: merged.slug,
+          date: merged.date,
+          description: merged.description,
+          hostId: merged.hostId ?? host.id
+        },
+        noteBasename: activeFile.basename
+      });
+      const outcome = await modal.openAndGetValue();
+      if (!outcome) {
+        return;
+      }
+      if (outcome.values.hostId && outcome.values.hostId !== host.id) {
+        const alternate = this.configStore.findStaticSiteHost(
+          outcome.values.hostId
+        );
+        if (alternate) {
+          Object.assign(host, alternate);
+        }
+      }
+      const nextFrontmatter = {
+        ...frontmatter,
+        title: outcome.values.title,
+        slug: outcome.values.slug,
+        date: outcome.values.date,
+        description: outcome.values.description
+      };
+      if (outcome.values.hostId) {
+        nextFrontmatter.host = outcome.values.hostId;
+      }
+      if (outcome.persistToNote) {
+        const updatedContent = upsertFrontmatterFields(fileContent, {
+          title: outcome.values.title,
+          slug: outcome.values.slug,
+          date: outcome.values.date,
+          description: outcome.values.description,
+          host: outcome.values.hostId
+        });
+        await this.app.vault.modify(activeFile, updatedContent);
+        fileContent = updatedContent;
+        markdownBody = this.stripFrontmatter(updatedContent);
+      }
+      frontmatter = nextFrontmatter;
+    }
     const previousRecord = this.configStore.findStaticSitePublish(
       host.id,
       activeFile.path
     );
-    new import_obsidian8.Notice(`Publishing ${activeFile.path} to ${host.name}...`, 4e3);
+    new import_obsidian9.Notice(`Publishing ${activeFile.path} to ${host.name}...`, 4e3);
     try {
       const result = await this.staticSitePublisher.publish({
         host,
@@ -5290,10 +5681,10 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       this.configStore.upsertStaticSitePublish(record);
       await this.configStore.save();
       for (const warning of result.warnings) {
-        new import_obsidian8.Notice(`Warning: ${warning}`, 8e3);
+        new import_obsidian9.Notice(`Warning: ${warning}`, 8e3);
       }
       if (result.status === "unchanged") {
-        new import_obsidian8.Notice(`Already up to date on ${host.name}.`, 6e3);
+        new import_obsidian9.Notice(`Already up to date on ${host.name}.`, 6e3);
         return;
       }
       if (result.publicUrl) {
@@ -5304,7 +5695,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
         );
       } else {
         const suffix = result.removedPreviousSlug ? ` (old slug '${result.removedPreviousSlug}' removed)` : "";
-        new import_obsidian8.Notice(
+        new import_obsidian9.Notice(
           `Published to ${host.name}: ${result.postRelativePathFromRepo}${suffix}`,
           1e4
         );
@@ -5316,7 +5707,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
   async handleUnpublishFromStaticSite() {
     const activeFile = this.app.workspace.getActiveFile();
     if (!activeFile || activeFile.extension !== "md") {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "Open the Markdown note you want to unpublish, then run this command.",
         8e3
       );
@@ -5326,7 +5717,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       (record2) => record2.vaultPath === normalizeVaultPath(activeFile.path)
     );
     if (publishes.length === 0) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         "This note has not been published to any static site host.",
         8e3
       );
@@ -5353,7 +5744,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     }
     const host = this.configStore.findStaticSiteHost(record.hostId);
     if (!host) {
-      new import_obsidian8.Notice(
+      new import_obsidian9.Notice(
         `Host '${record.hostId}' is no longer configured. Remove the publish record manually in settings.`,
         1e4
       );
@@ -5372,13 +5763,13 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
       this.configStore.removeStaticSitePublish(host.id, record.vaultPath);
       await this.configStore.save();
       if (result.status === "not_found") {
-        new import_obsidian8.Notice(
+        new import_obsidian9.Notice(
           `Post file not found on disk; publish record removed.`,
           8e3
         );
         return;
       }
-      new import_obsidian8.Notice(`Unpublished from ${host.name}.`, 8e3);
+      new import_obsidian9.Notice(`Unpublished from ${host.name}.`, 8e3);
     } catch (error) {
       this.showCommandError(error);
     }
@@ -5406,7 +5797,7 @@ var VaultPublisherPlugin = class extends import_obsidian8.Plugin {
     if (removedPreviousSlug) {
       fragment.append(` (old slug '${removedPreviousSlug}' removed)`);
     }
-    const notice = new import_obsidian8.Notice(fragment, 1e4);
+    const notice = new import_obsidian9.Notice(fragment, 1e4);
     notice.noticeEl.addClass("vault-publisher-clickable-notice");
     notice.noticeEl.setAttribute("aria-label", `Open ${url}`);
     notice.noticeEl.title = "Open post in browser";
