@@ -38,7 +38,7 @@ module.exports = __toCommonJS(main_exports);
 
 // src/plugin.ts
 var import_node_crypto = __toESM(require("node:crypto"), 1);
-var import_promises3 = __toESM(require("node:fs/promises"), 1);
+var import_promises4 = __toESM(require("node:fs/promises"), 1);
 var import_node_path4 = __toESM(require("node:path"), 1);
 var import_obsidian9 = require("obsidian");
 
@@ -675,12 +675,58 @@ function isValidPublishRecord(value) {
   const candidate = value;
   return isStringField(candidate.hostId) && isStringField(candidate.vaultPath) && isStringField(candidate.slug) && isStringField(candidate.lastPublished);
 }
+function optionalString(value) {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : void 0;
+}
+function normalizeGoogleDocsSettings(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const candidate = value;
+  return {
+    credentialsPath: optionalString(candidate.credentialsPath),
+    refreshToken: optionalString(candidate.refreshToken),
+    docsFolderId: optionalString(candidate.docsFolderId),
+    mediaFolderId: optionalString(candidate.mediaFolderId)
+  };
+}
+function isValidGoogleDocsAsset(value) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value;
+  return isStringField(candidate.vaultPath) && isStringField(candidate.fileId) && isStringField(candidate.name) && isStringField(candidate.mimeType) && isStringField(candidate.checksum) && (candidate.kind === "image" || candidate.kind === "video" || candidate.kind === "other") && isStringField(candidate.lastUploaded);
+}
+function normalizeGoogleDocsAsset(record) {
+  return {
+    ...record,
+    vaultPath: normalizeVaultPath(record.vaultPath),
+    webViewLink: optionalString(record.webViewLink),
+    webContentLink: optionalString(record.webContentLink)
+  };
+}
+function isValidGoogleDocsPublish(value) {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value;
+  return isStringField(candidate.vaultPath) && isStringField(candidate.docId) && isStringField(candidate.docUrl) && isStringField(candidate.assetFolderId) && isStringField(candidate.lastUploaded) && Array.isArray(candidate.assets);
+}
+function normalizeGoogleDocsPublish(record) {
+  return {
+    ...record,
+    vaultPath: normalizeVaultPath(record.vaultPath),
+    assets: record.assets.filter(isValidGoogleDocsAsset).map((asset) => normalizeGoogleDocsAsset(asset))
+  };
+}
 var ConfigStore = class {
   constructor(plugin) {
     this.data = {
       publishedTargets: [],
       staticSiteHosts: [],
-      staticSitePublishes: []
+      staticSitePublishes: [],
+      googleDocs: {},
+      googleDocsPublishes: []
     };
     this.plugin = plugin;
   }
@@ -690,7 +736,9 @@ var ConfigStore = class {
       this.data = {
         publishedTargets: [],
         staticSiteHosts: [],
-        staticSitePublishes: []
+        staticSitePublishes: [],
+        googleDocs: {},
+        googleDocsPublishes: []
       };
       return;
     }
@@ -708,10 +756,14 @@ var ConfigStore = class {
       ...record,
       vaultPath: normalizeVaultPath(record.vaultPath)
     })) : [];
+    const googleDocs = normalizeGoogleDocsSettings(candidate.googleDocs);
+    const googleDocsPublishes = Array.isArray(candidate.googleDocsPublishes) ? candidate.googleDocsPublishes.filter(isValidGoogleDocsPublish).map((record) => normalizeGoogleDocsPublish(record)) : [];
     this.data = {
       publishedTargets: records,
       staticSiteHosts,
-      staticSitePublishes
+      staticSitePublishes,
+      googleDocs,
+      googleDocsPublishes
     };
     if (migrated) {
       await this.save();
@@ -813,6 +865,52 @@ var ConfigStore = class {
       (entry) => !(entry.hostId === hostId && entry.vaultPath === normalized)
     );
     return (this.data.staticSitePublishes?.length ?? 0) !== initialLength;
+  }
+  getGoogleDocsSettings() {
+    return { ...this.data.googleDocs ?? {} };
+  }
+  updateGoogleDocsSettings(settings) {
+    this.data.googleDocs = normalizeGoogleDocsSettings({
+      ...this.data.googleDocs ?? {},
+      ...settings
+    });
+  }
+  clearGoogleDocsRefreshToken() {
+    this.data.googleDocs = {
+      ...this.data.googleDocs ?? {},
+      refreshToken: void 0
+    };
+  }
+  getGoogleDocsPublishes() {
+    return [...this.data.googleDocsPublishes ?? []];
+  }
+  findGoogleDocsPublish(vaultPath) {
+    const normalized = normalizeVaultPath(vaultPath);
+    return (this.data.googleDocsPublishes ?? []).find(
+      (record) => record.vaultPath === normalized
+    );
+  }
+  upsertGoogleDocsPublish(record) {
+    const normalized = normalizeGoogleDocsPublish(record);
+    const publishes = this.data.googleDocsPublishes ?? [];
+    const existingIndex = publishes.findIndex(
+      (entry) => entry.vaultPath === normalized.vaultPath
+    );
+    if (existingIndex >= 0) {
+      publishes[existingIndex] = normalized;
+    } else {
+      publishes.push(normalized);
+    }
+    this.data.googleDocsPublishes = publishes;
+  }
+  removeGoogleDocsPublish(vaultPath) {
+    const normalized = normalizeVaultPath(vaultPath);
+    const publishes = this.data.googleDocsPublishes ?? [];
+    const initialLength = publishes.length;
+    this.data.googleDocsPublishes = publishes.filter(
+      (entry) => entry.vaultPath !== normalized
+    );
+    return (this.data.googleDocsPublishes?.length ?? 0) !== initialLength;
   }
 };
 
@@ -1617,209 +1715,1106 @@ var GitService = class {
   }
 };
 
-// src/services/repo-inventory.ts
-var SOURCE_KIND_ORDER = {
-  "tracked-directory": 0,
-  "tracked-file": 1,
-  "scanned-directory": 2,
-  "orphan-mirror": 3
-};
-function buildEntryId(sourceKind, vaultPath) {
-  return `${sourceKind}:${normalizeVaultPath(vaultPath)}`;
-}
-function resolveUnpublishState(liveOriginUrl, storedOriginUrl) {
-  const githubRepoSlug = (liveOriginUrl ? parseGitHubRepoSlug(liveOriginUrl) : null) ?? (storedOriginUrl ? parseGitHubRepoSlug(storedOriginUrl) : null);
-  if (githubRepoSlug) {
-    return {
-      githubRepoSlug,
-      canUnpublish: true
-    };
-  }
-  const knownOrigin = liveOriginUrl ?? storedOriginUrl;
-  if (knownOrigin) {
-    return {
-      githubRepoSlug: null,
-      canUnpublish: false,
-      disabledReason: "Only GitHub remotes can be unpublished."
-    };
-  }
-  return {
-    githubRepoSlug: null,
-    canUnpublish: false,
-    disabledReason: "No GitHub remote is known for this repo."
-  };
-}
-async function buildEntry(sourceKind, target, vaultBasePath, resolveRepoState) {
-  const localRepoVaultPath = normalizeVaultPath(target.mirrorPath ?? target.vaultPath);
-  const localRepoPath = absolutePathForVaultPath(vaultBasePath, localRepoVaultPath);
-  const repoState = await resolveRepoState(localRepoPath);
-  const liveOriginUrl = repoState.originUrl ?? null;
-  const storedOriginUrl = target.storedOriginUrl ?? null;
-  const unpublishState = resolveUnpublishState(liveOriginUrl, storedOriginUrl);
-  return {
-    id: buildEntryId(sourceKind, target.vaultPath),
-    sourceKind,
-    targetType: target.targetType,
-    vaultPath: normalizeVaultPath(target.vaultPath),
-    mirrorPath: target.mirrorPath ? normalizeVaultPath(target.mirrorPath) : void 0,
-    repoName: target.repoName,
-    visibility: target.visibility,
-    localRepoPath,
-    localRepoVaultPath,
-    liveOriginUrl,
-    storedOriginUrl,
-    hasLocalGit: repoState.hasLocalGit,
-    hasOrigin: repoState.hasOrigin,
-    isGitHubOrigin: repoState.isGitHubOrigin,
-    ...unpublishState
-  };
-}
-async function buildRepoInventory(options) {
-  const trackedDirectoryPaths = /* @__PURE__ */ new Set();
-  const trackedMirrorPaths = /* @__PURE__ */ new Set();
-  const work = [];
-  for (const record of options.trackedTargets) {
-    if (record.targetType === "directory") {
-      trackedDirectoryPaths.add(normalizeVaultPath(record.vaultPath));
-      work.push(
-        buildEntry(
-          "tracked-directory",
-          {
-            targetType: "directory",
-            vaultPath: record.vaultPath,
-            repoName: record.repoName,
-            visibility: record.visibility,
-            storedOriginUrl: record.originUrl
-          },
-          options.vaultBasePath,
-          options.resolveRepoState
-        )
-      );
-      continue;
-    }
-    trackedMirrorPaths.add(normalizeVaultPath(record.mirrorPath ?? ""));
-    work.push(
-      buildEntry(
-        "tracked-file",
-        {
-          targetType: "file",
-          vaultPath: record.vaultPath,
-          mirrorPath: record.mirrorPath,
-          repoName: record.repoName,
-          visibility: record.visibility,
-          storedOriginUrl: record.originUrl
-        },
-        options.vaultBasePath,
-        options.resolveRepoState
-      )
-    );
-  }
-  for (const repoPath of options.standaloneRepoPaths) {
-    const normalizedRepoPath = normalizeVaultPath(repoPath);
-    if (trackedDirectoryPaths.has(normalizedRepoPath)) {
-      continue;
-    }
-    work.push(
-      buildEntry(
-        "scanned-directory",
-        {
-          targetType: "directory",
-          vaultPath: normalizedRepoPath
-        },
-        options.vaultBasePath,
-        options.resolveRepoState
-      )
-    );
-  }
-  for (const mirrorPath of options.orphanMirrorPaths) {
-    const normalizedMirrorPath = normalizeVaultPath(mirrorPath);
-    if (trackedMirrorPaths.has(normalizedMirrorPath)) {
-      continue;
-    }
-    work.push(
-      buildEntry(
-        "orphan-mirror",
-        {
-          targetType: "file",
-          vaultPath: normalizedMirrorPath,
-          mirrorPath: normalizedMirrorPath
-        },
-        options.vaultBasePath,
-        options.resolveRepoState
-      )
-    );
-  }
-  const entries = await Promise.all(work);
-  return entries.sort((left, right) => {
-    const kindOrder = SOURCE_KIND_ORDER[left.sourceKind] - SOURCE_KIND_ORDER[right.sourceKind];
-    if (kindOrder !== 0) {
-      return kindOrder;
-    }
-    return left.vaultPath.localeCompare(right.vaultPath);
-  });
-}
-
-// src/services/static-site-publisher.ts
+// src/services/google-docs-publisher.ts
 var import_promises2 = __toESM(require("node:fs/promises"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-
-// src/utils/frontmatter.ts
+var import_node_http = __toESM(require("node:http"), 1);
+var GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
+var GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder";
+var GOOGLE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+var GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+var GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+var DRIVE_API_ROOT = "https://www.googleapis.com/drive/v3";
+var DRIVE_UPLOAD_ROOT = "https://www.googleapis.com/upload/drive/v3";
+var DOCS_API_ROOT = "https://docs.googleapis.com/v1";
+var DEFAULT_MEDIA_FOLDER_NAME = "Vault Publisher Media";
+var GOOGLE_DOCS_PARAGRAPH_SPACE_AFTER_PT = 6;
+var GOOGLE_DOCS_HEADING_SPACE_ABOVE_PT = 12;
+var GOOGLE_DOCS_CODE_BLOCK_BACKGROUND = {
+  red: 0.94509804,
+  green: 0.9529412,
+  blue: 0.95686275
+};
+var GOOGLE_DOCS_CODE_BLOCK_MARKER = /GVP_CODE_BLOCK_(\d+)_(START|END)/g;
+var GoogleDocsPublishError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "GoogleDocsPublishError";
+  }
+};
 function asString(value) {
-  if (typeof value === "string") {
-    return value.trim();
-  }
-  if (typeof value === "number" || typeof value === "boolean") {
-    return String(value).trim();
-  }
-  return null;
+  return typeof value === "string" ? value : "";
 }
-function validatePostFrontmatter(raw) {
-  const errors = [];
-  const source = (raw && typeof raw === "object" ? raw : {}) ?? {};
-  const title = asString(source.title);
-  if (!title) {
-    errors.push({ field: "title", message: "title is required" });
-  }
-  const description = asString(source.description);
-  if (!description) {
-    errors.push({ field: "description", message: "description is required" });
-  }
-  const date = asString(source.date);
-  if (!date) {
-    errors.push({
-      field: "date",
-      message: "date is required (e.g. 2026-03-18T18:25Z)"
-    });
-  }
-  let slugRaw = asString(source.slug);
-  if (!slugRaw && title) {
-    slugRaw = sanitizeSlug(title);
-  }
-  if (!slugRaw) {
-    errors.push({ field: "slug", message: "slug is required" });
-  }
-  const sanitized = slugRaw ? sanitizeSlug(slugRaw) : "";
-  if (slugRaw && !isValidSlug(sanitized)) {
-    errors.push({
-      field: "slug",
-      message: `slug '${slugRaw}' is invalid. Use lowercase letters, numbers, and hyphens; avoid reserved names (blog, feed, static, assets, public).`
-    });
-  }
-  const hostCandidate = asString(source.host) ?? asString(source.hostId) ?? void 0;
-  if (errors.length > 0) {
-    return { ok: false, errors };
-  }
+function sanitizeDriveName(name) {
+  return name.replace(/[\\/:*?"<>|]/g, "-").replace(/\s+/g, " ").trim();
+}
+function fallbackDocUrl(docId) {
+  return `https://docs.google.com/document/d/${docId}/edit`;
+}
+function fallbackDriveUrl(fileId) {
+  return `https://drive.google.com/file/d/${fileId}/view`;
+}
+function normalizeSettings(settings) {
   return {
-    ok: true,
-    value: {
-      title,
-      slug: sanitized,
-      date,
-      description,
-      hostId: hostCandidate ?? void 0
-    }
+    credentialsPath: settings.credentialsPath?.trim() || void 0,
+    refreshToken: settings.refreshToken?.trim() || void 0,
+    docsFolderId: settings.docsFolderId?.trim() || void 0,
+    mediaFolderId: settings.mediaFolderId?.trim() || void 0
   };
 }
+async function loadOAuthConfig(credentialsPath) {
+  if (!credentialsPath) {
+    throw new GoogleDocsPublishError(
+      "Google OAuth credentials path is not configured."
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(await import_promises2.default.readFile(credentialsPath, "utf8"));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Unknown error";
+    throw new GoogleDocsPublishError(
+      `Could not read Google OAuth credentials: ${detail}`
+    );
+  }
+  const config = parsed.installed ?? parsed.web;
+  if (!config?.client_id || !config.client_secret) {
+    throw new GoogleDocsPublishError(
+      "Google OAuth credentials must contain an installed or web client with client_id and client_secret."
+    );
+  }
+  return config;
+}
+function getErrorStatus(error) {
+  const candidate = error;
+  return candidate.response?.status ?? candidate.code;
+}
+function isMissingFileError(error) {
+  const status = getErrorStatus(error);
+  return status === 404 || status === 410;
+}
+function isGoogleDocsHeadingStyle(value) {
+  return typeof value === "string" && /^HEADING_[1-6]$/.test(value);
+}
+var GoogleDocsApiError = class extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = "GoogleDocsApiError";
+    this.code = code;
+  }
+};
+function makeAuthUrl(config, redirectUri) {
+  const params = new URLSearchParams({
+    client_id: config.client_id ?? "",
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: GOOGLE_SCOPE,
+    access_type: "offline",
+    prompt: "consent"
+  });
+  return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+}
+async function fetchJson(url, init) {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    const message = data?.error_description ?? data?.error?.message ?? data?.error ?? response.statusText;
+    throw new GoogleDocsApiError(String(message), response.status);
+  }
+  return data;
+}
+async function exchangeCodeForRefreshToken(config, code, redirectUri) {
+  const data = await fetchJson(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: config.client_id ?? "",
+      client_secret: config.client_secret ?? "",
+      code,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code"
+    })
+  });
+  if (!data.refresh_token) {
+    throw new GoogleDocsPublishError(
+      "Google did not return a refresh token. Revoke the app in your Google account and authorize again."
+    );
+  }
+  return data.refresh_token;
+}
+async function refreshAccessToken(config, refreshToken) {
+  const data = await fetchJson(GOOGLE_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: config.client_id ?? "",
+      client_secret: config.client_secret ?? "",
+      refresh_token: refreshToken,
+      grant_type: "refresh_token"
+    })
+  });
+  if (!data.access_token) {
+    throw new GoogleDocsPublishError(
+      "Google did not return an access token. Re-authorize Google Docs in settings."
+    );
+  }
+  return data.access_token;
+}
+function buildQuery(params) {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== void 0) {
+      search.set(key, value);
+    }
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+function multipartBody(metadata, media) {
+  const boundary = `vault-publisher-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const header = Buffer.from(
+    [
+      `--${boundary}`,
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      JSON.stringify(metadata),
+      `--${boundary}`,
+      `Content-Type: ${media.mimeType}`,
+      "",
+      ""
+    ].join("\r\n"),
+    "utf8"
+  );
+  const footer = Buffer.from(`\r
+--${boundary}--\r
+`, "utf8");
+  return {
+    body: Buffer.concat([header, media.body, footer]),
+    contentType: `multipart/related; boundary=${boundary}`
+  };
+}
+var GoogleDriveRestClient = class {
+  constructor(accessToken) {
+    this.accessToken = accessToken;
+    this.files = {
+      create: (input) => this.createFile(input),
+      update: (input) => this.updateFile(input),
+      get: (input) => this.getFile(input)
+    };
+    this.permissions = {
+      create: (input) => this.createPermission(input)
+    };
+  }
+  authHeaders(extra) {
+    return {
+      Authorization: `Bearer ${this.accessToken}`,
+      ...extra ?? {}
+    };
+  }
+  async createFile(input) {
+    if (input.media) {
+      const multipart = multipartBody(input.requestBody, input.media);
+      const data2 = await fetchJson(
+        `${DRIVE_UPLOAD_ROOT}/files${buildQuery({
+          uploadType: "multipart",
+          fields: input.fields
+        })}`,
+        {
+          method: "POST",
+          headers: this.authHeaders({ "Content-Type": multipart.contentType }),
+          body: multipart.body
+        }
+      );
+      return { data: data2 };
+    }
+    const data = await fetchJson(
+      `${DRIVE_API_ROOT}/files${buildQuery({ fields: input.fields })}`,
+      {
+        method: "POST",
+        headers: this.authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(input.requestBody)
+      }
+    );
+    return { data };
+  }
+  async updateFile(input) {
+    const encodedFileId = encodeURIComponent(input.fileId);
+    if (input.media) {
+      const multipart = multipartBody(input.requestBody, input.media);
+      const data2 = await fetchJson(
+        `${DRIVE_UPLOAD_ROOT}/files/${encodedFileId}${buildQuery({
+          uploadType: "multipart",
+          fields: input.fields
+        })}`,
+        {
+          method: "PATCH",
+          headers: this.authHeaders({ "Content-Type": multipart.contentType }),
+          body: multipart.body
+        }
+      );
+      return { data: data2 };
+    }
+    const data = await fetchJson(
+      `${DRIVE_API_ROOT}/files/${encodedFileId}${buildQuery({
+        fields: input.fields
+      })}`,
+      {
+        method: "PATCH",
+        headers: this.authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(input.requestBody)
+      }
+    );
+    return { data };
+  }
+  async getFile(input) {
+    const encodedFileId = encodeURIComponent(input.fileId);
+    const data = await fetchJson(
+      `${DRIVE_API_ROOT}/files/${encodedFileId}${buildQuery({
+        fields: input.fields
+      })}`,
+      {
+        method: "GET",
+        headers: this.authHeaders()
+      }
+    );
+    return { data };
+  }
+  async createPermission(input) {
+    const encodedFileId = encodeURIComponent(input.fileId);
+    const data = await fetchJson(
+      `${DRIVE_API_ROOT}/files/${encodedFileId}/permissions${buildQuery({
+        fields: input.fields
+      })}`,
+      {
+        method: "POST",
+        headers: this.authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(input.requestBody)
+      }
+    );
+    return { data };
+  }
+};
+var GoogleDocsRestClient = class {
+  constructor(accessToken) {
+    this.accessToken = accessToken;
+    this.documents = {
+      get: (input) => this.getDocument(input),
+      batchUpdate: (input) => this.batchUpdateDocument(input)
+    };
+  }
+  authHeaders(extra) {
+    return {
+      Authorization: `Bearer ${this.accessToken}`,
+      ...extra ?? {}
+    };
+  }
+  async getDocument(input) {
+    const encodedDocumentId = encodeURIComponent(input.documentId);
+    const data = await fetchJson(
+      `${DOCS_API_ROOT}/documents/${encodedDocumentId}${buildQuery({
+        fields: input.fields
+      })}`,
+      {
+        method: "GET",
+        headers: this.authHeaders()
+      }
+    );
+    return { data };
+  }
+  async batchUpdateDocument(input) {
+    const encodedDocumentId = encodeURIComponent(input.documentId);
+    const data = await fetchJson(
+      `${DOCS_API_ROOT}/documents/${encodedDocumentId}:batchUpdate`,
+      {
+        method: "POST",
+        headers: this.authHeaders({ "Content-Type": "application/json" }),
+        body: JSON.stringify(input.requestBody)
+      }
+    );
+    return { data };
+  }
+};
+var GoogleDocsPublisher = class {
+  constructor(clientFactory) {
+    this.clientFactory = clientFactory;
+  }
+  async authorizeWithLocalServer(settings, openExternalUrl) {
+    const normalized = normalizeSettings(settings);
+    const config = await loadOAuthConfig(normalized.credentialsPath);
+    const authResult = await new Promise(
+      (resolve, reject) => {
+        const server = import_node_http.default.createServer();
+        let resolved = false;
+        let activeRedirectUri = "";
+        const finish = (error, value) => {
+          if (resolved) {
+            return;
+          }
+          resolved = true;
+          server.close();
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve({ code: value ?? "", redirectUri: activeRedirectUri });
+        };
+        server.on("request", (request, response) => {
+          const host = request.headers.host ?? "127.0.0.1";
+          const requestUrl = new URL(request.url ?? "/", `http://${host}`);
+          const incomingCode = requestUrl.searchParams.get("code");
+          const incomingError = requestUrl.searchParams.get("error");
+          if (incomingError) {
+            response.writeHead(400, { "Content-Type": "text/html" });
+            response.end(
+              "<p>Google authorization failed. Return to Obsidian.</p>"
+            );
+            finish(
+              new GoogleDocsPublishError(
+                `Google authorization failed: ${incomingError}`
+              )
+            );
+            return;
+          }
+          if (!incomingCode) {
+            response.writeHead(404, { "Content-Type": "text/plain" });
+            response.end("Not found");
+            return;
+          }
+          response.writeHead(200, { "Content-Type": "text/html" });
+          response.end(
+            "<p>Google authorization complete. You can close this tab and return to Obsidian.</p>"
+          );
+          finish(null, incomingCode);
+        });
+        server.on("error", (error) => {
+          finish(error);
+        });
+        server.listen(0, "127.0.0.1", () => {
+          const address = server.address();
+          const redirectUri = `http://127.0.0.1:${address.port}/oauth2callback`;
+          activeRedirectUri = redirectUri;
+          const authUrl = makeAuthUrl(config, redirectUri);
+          void openExternalUrl(authUrl).catch((error) => {
+            const detail = error instanceof Error ? error.message : String(error);
+            finish(
+              new GoogleDocsPublishError(
+                `Could not open Google authorization URL: ${detail}`
+              )
+            );
+          });
+        });
+      }
+    );
+    const redirectConfig = await loadOAuthConfig(normalized.credentialsPath);
+    return exchangeCodeForRefreshToken(
+      redirectConfig,
+      authResult.code,
+      authResult.redirectUri
+    );
+  }
+  async publish(input) {
+    const settings = normalizeSettings(input.settings);
+    if (!settings.docsFolderId) {
+      throw new GoogleDocsPublishError("Google Docs folder ID is not configured.");
+    }
+    if (!settings.refreshToken) {
+      throw new GoogleDocsPublishError(
+        "Google Docs is not authorized. Authorize it in Vault Publisher settings."
+      );
+    }
+    const clients = await this.createClients(settings);
+    const warnings = [...input.missingMedia.map((media) => media.message)];
+    const mediaRootId = settings.mediaFolderId ?? await this.createFolder(
+      clients.drive,
+      DEFAULT_MEDIA_FOLDER_NAME,
+      settings.docsFolderId
+    );
+    const nextSettings = {
+      ...settings,
+      mediaFolderId: mediaRootId
+    };
+    const assetFolderId = input.previousRecord?.assetFolderId ?? await this.createFolder(
+      clients.drive,
+      `${sanitizeDriveName(input.title)} assets`,
+      mediaRootId
+    );
+    const assetRecords = [];
+    const replacements = /* @__PURE__ */ new Map();
+    const previousAssets = new Map(
+      (input.previousRecord?.assets ?? []).map((asset) => [
+        normalizeVaultPath(asset.vaultPath),
+        asset
+      ])
+    );
+    for (const upload of input.mediaUploads) {
+      const previous = previousAssets.get(normalizeVaultPath(upload.vaultPath));
+      try {
+        const asset = await this.uploadAsset(
+          clients.drive,
+          upload,
+          assetFolderId,
+          previous
+        );
+        assetRecords.push(asset);
+        replacements.set(upload.marker, {
+          marker: upload.marker,
+          original: upload.original,
+          kind: upload.kind,
+          inlineSupported: upload.inlineSupported,
+          asset
+        });
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        warnings.push(`Could not upload ${upload.original}: ${detail}`);
+        replacements.set(upload.marker, {
+          marker: upload.marker,
+          original: upload.original,
+          kind: upload.kind,
+          inlineSupported: false,
+          warning: detail
+        });
+      }
+    }
+    for (const missing of input.missingMedia) {
+      replacements.set(missing.marker, {
+        marker: missing.marker,
+        original: missing.original,
+        kind: "other",
+        inlineSupported: false,
+        warning: missing.message
+      });
+    }
+    if (input.previousRecord?.docId) {
+      await this.clearDocumentBody(clients.docs, input.previousRecord.docId);
+    }
+    const doc = await this.createOrUpdateDoc(clients.drive, {
+      docId: input.previousRecord?.docId,
+      title: input.title,
+      html: input.html,
+      parentFolderId: settings.docsFolderId
+    });
+    await this.ensureAnyoneReader(clients.drive, doc.id);
+    const spacingWarning = await this.applyDocumentSpacing(
+      clients.docs,
+      doc.id
+    );
+    if (spacingWarning) {
+      warnings.push(spacingWarning);
+    }
+    const codeBlockWarnings = await this.patchCodeBlocks(clients.docs, doc.id);
+    warnings.push(...codeBlockWarnings);
+    const patchWarnings = await this.patchMediaPlaceholders(
+      clients.docs,
+      doc.id,
+      Array.from(replacements.values())
+    );
+    warnings.push(...patchWarnings);
+    await this.trashRemovedAssets(
+      clients.drive,
+      input.previousRecord?.assets ?? [],
+      assetRecords
+    );
+    const nowIso = (/* @__PURE__ */ new Date()).toISOString();
+    return {
+      settings: nextSettings,
+      status: input.previousRecord ? "updated" : "created",
+      warnings,
+      record: {
+        vaultPath: normalizeVaultPath(input.vaultPath),
+        docId: doc.id,
+        docUrl: doc.webViewLink ?? fallbackDocUrl(doc.id),
+        assetFolderId,
+        lastUploaded: nowIso,
+        assets: assetRecords
+      }
+    };
+  }
+  async createClients(settings) {
+    if (this.clientFactory) {
+      return this.clientFactory(settings);
+    }
+    const config = await loadOAuthConfig(settings.credentialsPath);
+    const accessToken = await refreshAccessToken(
+      config,
+      settings.refreshToken ?? ""
+    );
+    return {
+      drive: new GoogleDriveRestClient(accessToken),
+      docs: new GoogleDocsRestClient(accessToken)
+    };
+  }
+  async createFolder(drive, name, parentFolderId) {
+    const response = await drive.files.create({
+      requestBody: {
+        name,
+        mimeType: GOOGLE_FOLDER_MIME,
+        parents: [parentFolderId]
+      },
+      fields: "id"
+    });
+    const id = asString(response.data.id);
+    if (!id) {
+      throw new GoogleDocsPublishError(`Could not create Drive folder ${name}.`);
+    }
+    return id;
+  }
+  async createOrUpdateDoc(drive, input) {
+    const media = {
+      mimeType: "text/html",
+      body: Buffer.from(input.html, "utf8")
+    };
+    const requestBody = {
+      name: sanitizeDriveName(input.title) || "Untitled",
+      mimeType: GOOGLE_DOC_MIME,
+      parents: input.docId ? void 0 : [input.parentFolderId]
+    };
+    const response = input.docId ? await drive.files.update({
+      fileId: input.docId,
+      requestBody,
+      media,
+      fields: "id,webViewLink"
+    }) : await drive.files.create({
+      requestBody,
+      media,
+      fields: "id,webViewLink"
+    });
+    const id = asString(response.data.id);
+    if (!id) {
+      throw new GoogleDocsPublishError("Google Drive did not return a doc ID.");
+    }
+    return {
+      id,
+      webViewLink: asString(response.data.webViewLink) || void 0
+    };
+  }
+  async uploadAsset(drive, upload, assetFolderId, previous) {
+    let fileId = previous?.fileId;
+    if (fileId && previous?.checksum === upload.checksum) {
+      try {
+        const existing = await this.getDriveFile(drive, fileId);
+        await this.ensureAnyoneReader(drive, fileId);
+        return this.toAssetRecord(upload, existing, fileId);
+      } catch (error) {
+        if (!isMissingFileError(error)) {
+          throw error;
+        }
+        fileId = void 0;
+      }
+    }
+    const media = {
+      mimeType: upload.mimeType,
+      body: upload.bytes
+    };
+    const requestBody = {
+      name: sanitizeDriveName(upload.name) || "media",
+      mimeType: upload.mimeType,
+      parents: fileId ? void 0 : [assetFolderId]
+    };
+    const response = fileId ? await drive.files.update({
+      fileId,
+      requestBody,
+      media,
+      fields: "id,name,mimeType,webViewLink,webContentLink"
+    }) : await drive.files.create({
+      requestBody,
+      media,
+      fields: "id,name,mimeType,webViewLink,webContentLink"
+    });
+    fileId = asString(response.data.id);
+    if (!fileId) {
+      throw new GoogleDocsPublishError(
+        `Google Drive did not return an asset ID for ${upload.name}.`
+      );
+    }
+    await this.ensureAnyoneReader(drive, fileId);
+    const file = await this.getDriveFile(drive, fileId);
+    return this.toAssetRecord(upload, file, fileId);
+  }
+  async getDriveFile(drive, fileId) {
+    const response = await drive.files.get({
+      fileId,
+      fields: "id,name,mimeType,webViewLink,webContentLink"
+    });
+    return response.data;
+  }
+  toAssetRecord(upload, file, fileId) {
+    return {
+      vaultPath: normalizeVaultPath(upload.vaultPath),
+      fileId,
+      name: asString(file.name) || upload.name,
+      mimeType: asString(file.mimeType) || upload.mimeType,
+      checksum: upload.checksum,
+      kind: upload.kind,
+      webViewLink: asString(file.webViewLink) || fallbackDriveUrl(fileId),
+      webContentLink: asString(file.webContentLink) || void 0,
+      lastUploaded: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  async ensureAnyoneReader(drive, fileId) {
+    try {
+      await drive.permissions.create({
+        fileId,
+        requestBody: {
+          type: "anyone",
+          role: "reader"
+        },
+        fields: "id"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : "";
+      if (getErrorStatus(error) !== 409 && !message.includes("already exists") && !message.includes("duplicate")) {
+        throw error;
+      }
+    }
+  }
+  async patchCodeBlocks(docs, documentId) {
+    const warnings = [];
+    try {
+      const document2 = await docs.documents.get({
+        documentId,
+        fields: "body(content(startIndex,endIndex,paragraph(elements(startIndex,endIndex,textRun(content))),table(tableRows(tableCells(content(startIndex,endIndex,paragraph(elements(startIndex,endIndex,textRun(content)))))))))"
+      });
+      const paragraphs = this.collectParagraphTexts(document2.data);
+      const patches = this.findCodeBlockPatches(paragraphs, warnings);
+      if (patches.length === 0) {
+        return warnings;
+      }
+      const requests = [];
+      for (const patch of patches) {
+        requests.push({
+          updateParagraphStyle: {
+            range: patch.styleRange,
+            paragraphStyle: {
+              shading: {
+                backgroundColor: {
+                  color: {
+                    rgbColor: GOOGLE_DOCS_CODE_BLOCK_BACKGROUND
+                  }
+                }
+              }
+            },
+            fields: "shading"
+          }
+        });
+      }
+      const deletionRanges = patches.flatMap((patch) => patch.deletionRanges).filter((range) => range.endIndex > range.startIndex).sort((left, right) => right.startIndex - left.startIndex);
+      for (const range of deletionRanges) {
+        requests.push({ deleteContentRange: { range } });
+      }
+      await docs.documents.batchUpdate({
+        documentId,
+        requestBody: { requests }
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      warnings.push(`Could not apply Google Docs code block styling: ${detail}`);
+    }
+    return warnings;
+  }
+  collectParagraphTexts(document2) {
+    const paragraphs = [];
+    const scanContent = (content) => {
+      for (const element of content ?? []) {
+        const paragraph = element.paragraph;
+        if (paragraph && typeof element.startIndex === "number" && typeof element.endIndex === "number") {
+          let text = "";
+          const runs = [];
+          for (const paragraphElement of paragraph.elements ?? []) {
+            const content2 = paragraphElement.textRun?.content;
+            const startIndex = paragraphElement.startIndex;
+            if (typeof content2 !== "string" || typeof startIndex !== "number") {
+              continue;
+            }
+            const offsetStart = text.length;
+            text += content2;
+            runs.push({
+              offsetStart,
+              offsetEnd: text.length,
+              startIndex
+            });
+          }
+          paragraphs.push({
+            startIndex: element.startIndex,
+            endIndex: element.endIndex,
+            text,
+            runs
+          });
+        }
+        if (Array.isArray(element.table?.tableRows)) {
+          for (const row of element.table.tableRows) {
+            for (const cell of row.tableCells ?? []) {
+              scanContent(cell.content ?? []);
+            }
+          }
+        }
+      }
+    };
+    scanContent(document2.body?.content ?? []);
+    return paragraphs.sort((left, right) => left.startIndex - right.startIndex);
+  }
+  findCodeBlockPatches(paragraphs, warnings) {
+    const markers = [];
+    for (const paragraph of paragraphs) {
+      GOOGLE_DOCS_CODE_BLOCK_MARKER.lastIndex = 0;
+      let match = GOOGLE_DOCS_CODE_BLOCK_MARKER.exec(paragraph.text);
+      while (match) {
+        markers.push({
+          blockIndex: Number(match[1]),
+          type: match[2],
+          marker: match[0],
+          offset: match.index,
+          paragraph
+        });
+        match = GOOGLE_DOCS_CODE_BLOCK_MARKER.exec(paragraph.text);
+      }
+    }
+    const starts = /* @__PURE__ */ new Map();
+    const patches = [];
+    for (const marker of markers) {
+      if (marker.type === "START") {
+        starts.set(marker.blockIndex, marker);
+        continue;
+      }
+      const start = starts.get(marker.blockIndex);
+      if (!start) {
+        warnings.push(
+          `Could not find start marker for code block ${marker.blockIndex}.`
+        );
+        continue;
+      }
+      starts.delete(marker.blockIndex);
+      const styleStart = start.paragraph.startIndex;
+      const styleEnd = Math.max(styleStart, marker.paragraph.endIndex - 1);
+      patches.push({
+        styleRange: { startIndex: styleStart, endIndex: styleEnd },
+        deletionRanges: [
+          this.codeBlockMarkerDeletionRange(start),
+          this.codeBlockMarkerDeletionRange(marker)
+        ]
+      });
+    }
+    for (const blockIndex of starts.keys()) {
+      warnings.push(`Could not find end marker for code block ${blockIndex}.`);
+    }
+    return patches;
+  }
+  codeBlockMarkerDeletionRange(marker) {
+    const paragraph = marker.paragraph;
+    let startOffset = marker.offset;
+    let endOffset = marker.offset + marker.marker.length;
+    if (marker.type === "START") {
+      endOffset = this.includeFollowingLineBreak(paragraph.text, endOffset);
+    } else {
+      startOffset = this.includePrecedingLineBreak(paragraph.text, startOffset);
+    }
+    return {
+      startIndex: this.paragraphOffsetToDocumentIndex(paragraph, startOffset),
+      endIndex: this.paragraphOffsetToDocumentIndex(paragraph, endOffset)
+    };
+  }
+  includeFollowingLineBreak(text, offset) {
+    if (text[offset] === "\r" && text[offset + 1] === "\n") {
+      return offset + 2;
+    }
+    if (text[offset] === "\n" || text[offset] === "\r" || text[offset] === "\v") {
+      return offset + 1;
+    }
+    return offset;
+  }
+  includePrecedingLineBreak(text, offset) {
+    if (text[offset - 2] === "\r" && text[offset - 1] === "\n") {
+      return offset - 2;
+    }
+    if (text[offset - 1] === "\n" || text[offset - 1] === "\r" || text[offset - 1] === "\v") {
+      return offset - 1;
+    }
+    return offset;
+  }
+  paragraphOffsetToDocumentIndex(paragraph, offset) {
+    for (const run of paragraph.runs) {
+      if (offset >= run.offsetStart && offset <= run.offsetEnd) {
+        return run.startIndex + offset - run.offsetStart;
+      }
+    }
+    return Math.max(paragraph.startIndex, paragraph.endIndex - 1);
+  }
+  async clearDocumentBody(docs, documentId) {
+    const document2 = await docs.documents.get({
+      documentId,
+      fields: "body(content(endIndex))"
+    });
+    const { bodyEndIndex } = this.collectDocumentParagraphRanges(document2.data);
+    if (!bodyEndIndex || bodyEndIndex <= 2) {
+      return;
+    }
+    await docs.documents.batchUpdate({
+      documentId,
+      requestBody: {
+        requests: [
+          {
+            deleteContentRange: {
+              range: { startIndex: 1, endIndex: bodyEndIndex - 1 }
+            }
+          }
+        ]
+      }
+    });
+  }
+  async applyDocumentSpacing(docs, documentId) {
+    try {
+      const document2 = await docs.documents.get({
+        documentId,
+        fields: "body(content(startIndex,endIndex,paragraph(paragraphStyle),table(tableRows(tableCells(content(startIndex,endIndex,paragraph(paragraphStyle)))))))"
+      });
+      const { bodyEndIndex, headingRanges } = this.collectDocumentParagraphRanges(document2.data);
+      if (!bodyEndIndex || bodyEndIndex <= 2) {
+        return null;
+      }
+      const requests = [
+        {
+          updateParagraphStyle: {
+            range: { startIndex: 1, endIndex: bodyEndIndex - 1 },
+            paragraphStyle: {
+              spaceBelow: {
+                magnitude: GOOGLE_DOCS_PARAGRAPH_SPACE_AFTER_PT,
+                unit: "PT"
+              }
+            },
+            fields: "spaceBelow"
+          }
+        }
+      ];
+      for (const range of headingRanges) {
+        requests.push({
+          updateParagraphStyle: {
+            range,
+            paragraphStyle: {
+              spaceAbove: {
+                magnitude: GOOGLE_DOCS_HEADING_SPACE_ABOVE_PT,
+                unit: "PT"
+              }
+            },
+            fields: "spaceAbove"
+          }
+        });
+      }
+      await docs.documents.batchUpdate({
+        documentId,
+        requestBody: { requests }
+      });
+      return null;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return `Could not apply Google Docs document spacing: ${detail}`;
+    }
+  }
+  collectDocumentParagraphRanges(document2) {
+    let endIndex = 0;
+    const headingRanges = [];
+    const scanContent = (content) => {
+      for (const element of content ?? []) {
+        if (typeof element.endIndex === "number") {
+          endIndex = Math.max(endIndex, element.endIndex);
+        }
+        const namedStyleType = element.paragraph?.paragraphStyle?.namedStyleType;
+        if (typeof element.startIndex === "number" && typeof element.endIndex === "number" && element.endIndex > element.startIndex && isGoogleDocsHeadingStyle(namedStyleType)) {
+          headingRanges.push({
+            startIndex: element.startIndex,
+            endIndex: Math.max(element.startIndex, element.endIndex - 1)
+          });
+        }
+        if (Array.isArray(element.table?.tableRows)) {
+          for (const row of element.table.tableRows) {
+            for (const cell of row.tableCells ?? []) {
+              scanContent(cell.content ?? []);
+            }
+          }
+        }
+      }
+    };
+    scanContent(document2.body?.content ?? []);
+    return {
+      bodyEndIndex: endIndex || void 0,
+      headingRanges
+    };
+  }
+  async patchMediaPlaceholders(docs, documentId, replacements) {
+    const warnings = [];
+    if (replacements.length === 0) {
+      return warnings;
+    }
+    const document2 = await docs.documents.get({ documentId });
+    const found = this.findMarkerRanges(document2.data, replacements);
+    for (const replacement of found.sort(
+      (left, right) => right.range.startIndex - left.range.startIndex
+    )) {
+      const warning = await this.patchSinglePlaceholder(
+        docs,
+        documentId,
+        replacement.range,
+        replacement.replacement
+      );
+      if (warning) {
+        warnings.push(warning);
+      }
+    }
+    const foundMarkers = new Set(found.map((entry) => entry.replacement.marker));
+    for (const replacement of replacements) {
+      if (!foundMarkers.has(replacement.marker)) {
+        warnings.push(`Could not find placeholder for ${replacement.original}.`);
+      }
+    }
+    return warnings;
+  }
+  findMarkerRanges(document2, replacements) {
+    const byMarker = new Map(replacements.map((item) => [item.marker, item]));
+    const ranges = [];
+    const scanElements = (elements) => {
+      for (const element of elements ?? []) {
+        const paragraphElements = element.paragraph?.elements;
+        if (Array.isArray(paragraphElements)) {
+          for (const paragraphElement of paragraphElements) {
+            const content = paragraphElement.textRun?.content;
+            const startIndex = paragraphElement.startIndex;
+            if (typeof content !== "string" || typeof startIndex !== "number") {
+              continue;
+            }
+            for (const [marker, replacement] of byMarker) {
+              let index = content.indexOf(marker);
+              while (index >= 0) {
+                ranges.push({
+                  replacement,
+                  range: {
+                    startIndex: startIndex + index,
+                    endIndex: startIndex + index + marker.length
+                  }
+                });
+                index = content.indexOf(marker, index + marker.length);
+              }
+            }
+          }
+        }
+        if (Array.isArray(element.table?.tableRows)) {
+          for (const row of element.table.tableRows) {
+            for (const cell of row.tableCells ?? []) {
+              scanElements(cell.content ?? []);
+            }
+          }
+        }
+      }
+    };
+    scanElements(document2.body?.content ?? []);
+    return ranges;
+  }
+  async patchSinglePlaceholder(docs, documentId, range, replacement) {
+    const imageUri = replacement.asset?.webContentLink;
+    const viewLink = replacement.asset?.webViewLink;
+    if (replacement.kind === "image" && replacement.inlineSupported && imageUri) {
+      try {
+        await docs.documents.batchUpdate({
+          documentId,
+          requestBody: {
+            requests: [
+              { deleteContentRange: { range } },
+              {
+                insertInlineImage: {
+                  uri: imageUri,
+                  location: { index: range.startIndex }
+                }
+              }
+            ]
+          }
+        });
+        return null;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await this.insertFallbackText(docs, documentId, range, replacement);
+        return `Could not inline ${replacement.original}: ${detail}`;
+      }
+    }
+    if (replacement.kind === "video" && viewLink) {
+      try {
+        await docs.documents.batchUpdate({
+          documentId,
+          requestBody: {
+            requests: [
+              { deleteContentRange: { range } },
+              {
+                insertRichLink: {
+                  richLinkProperties: {
+                    uri: viewLink
+                  },
+                  location: { index: range.startIndex }
+                }
+              }
+            ]
+          }
+        });
+        return null;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        await this.insertFallbackText(docs, documentId, range, replacement);
+        return `Could not insert video link for ${replacement.original}: ${detail}`;
+      }
+    }
+    await this.insertFallbackText(docs, documentId, range, replacement);
+    return replacement.warning ?? null;
+  }
+  async insertFallbackText(docs, documentId, range, replacement) {
+    const link = replacement.asset?.webViewLink;
+    const text = link ? `${replacement.original} ${link}` : replacement.original;
+    const textEnd = range.startIndex + text.length;
+    const textStyle = {
+      italic: true,
+      foregroundColor: {
+        color: {
+          rgbColor: {
+            red: 0.45,
+            green: 0.45,
+            blue: 0.45
+          }
+        }
+      }
+    };
+    let fields = "italic,foregroundColor";
+    if (link) {
+      textStyle.link = { url: link };
+      fields += ",link";
+    }
+    await docs.documents.batchUpdate({
+      documentId,
+      requestBody: {
+        requests: [
+          { deleteContentRange: { range } },
+          { insertText: { location: { index: range.startIndex }, text } },
+          {
+            updateTextStyle: {
+              range: { startIndex: range.startIndex, endIndex: textEnd },
+              textStyle,
+              fields
+            }
+          }
+        ]
+      }
+    });
+  }
+  async trashRemovedAssets(drive, previousAssets, nextAssets) {
+    const nextIds = new Set(nextAssets.map((asset) => asset.fileId));
+    const removed = previousAssets.filter((asset) => !nextIds.has(asset.fileId));
+    await Promise.all(
+      removed.map(async (asset) => {
+        try {
+          await drive.files.update({
+            fileId: asset.fileId,
+            requestBody: { trashed: true },
+            fields: "id"
+          });
+        } catch {
+        }
+      })
+    );
+  }
+};
 
 // node_modules/marked/lib/marked.esm.js
 function z() {
@@ -3052,11 +4047,329 @@ var Wt = g.parseInline;
 var Jt = b.parse;
 var Vt = x.lex;
 
-// src/services/markdown-renderer.ts
+// src/services/google-docs-renderer.ts
 function escapeHtml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 }
 function isAbsoluteUrl(href) {
+  return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href);
+}
+function mediaMarker(index) {
+  return `GVP_MEDIA_${index}_PLACEHOLDER`;
+}
+function codeBlockStartMarker(index) {
+  return `GVP_CODE_BLOCK_${index}_START`;
+}
+function codeBlockEndMarker(index) {
+  return `GVP_CODE_BLOCK_${index}_END`;
+}
+function unresolvedPlaceholder(label) {
+  return `<span style="color:#777;font-style:italic;">${escapeHtml(label)}</span>`;
+}
+var GOOGLE_DOCS_IMPORT_STYLE = [
+  "body{font-family:Arial,sans-serif;font-size:11pt;line-height:1.15;color:#202124;}",
+  "p{margin:0 0 6pt 0;}",
+  "h1,h2,h3,h4,h5,h6{line-height:1.2;margin:12pt 0 6pt 0;}",
+  "h1{font-size:20pt;}",
+  "h2{font-size:16pt;}",
+  "h3{font-size:14pt;}",
+  "ul,ol{margin-top:0;margin-bottom:6pt;}",
+  "li{margin:0 0 3pt 0;}",
+  "blockquote{color:#5f6368;margin:0 0 6pt 18pt;}",
+  "pre{margin:0 0 6pt 0;white-space:pre-wrap;background-color:#f1f3f4;padding:6pt;}",
+  'code{font-family:"Courier New",monospace;font-size:10pt;}',
+  "table{border-collapse:collapse;margin:0 0 6pt 0;}",
+  "th,td{border:1px solid #dadce0;padding:4pt 6pt;}",
+  "img{max-width:100%;}"
+].join("");
+function buildDocumentHtml(title, bodyHtml) {
+  return [
+    "<!doctype html>",
+    '<html><head><meta charset="utf-8">',
+    `<title>${escapeHtml(title)}</title>`,
+    `<style>${GOOGLE_DOCS_IMPORT_STYLE}</style>`,
+    "</head><body>",
+    bodyHtml,
+    "</body></html>"
+  ].join("");
+}
+function renderGoogleDocsMarkdown(source, options) {
+  const mediaRefs = [];
+  const warnings = [];
+  let codeBlockCount = 0;
+  const preprocessed = source.replace(/!\[\[([^\]]+)\]\]/g, (original, rawTarget) => {
+    const marker = mediaMarker(mediaRefs.length);
+    mediaRefs.push({
+      marker,
+      target: rawTarget.trim(),
+      original,
+      altText: rawTarget.trim(),
+      source: "obsidian-embed"
+    });
+    return marker;
+  }).replace(/\[\[([^\]]+)\]\]/g, (original) => {
+    warnings.push(
+      `Obsidian link ${original} was kept as a grey italic placeholder.`
+    );
+    return unresolvedPlaceholder(original);
+  });
+  const marked = new D({
+    gfm: true,
+    breaks: false,
+    pedantic: false
+  });
+  marked.use({
+    renderer: {
+      image({ href, title, text }) {
+        if (!isAbsoluteUrl(href)) {
+          const marker = mediaMarker(mediaRefs.length);
+          mediaRefs.push({
+            marker,
+            target: href,
+            original: `![${text}](${href})`,
+            altText: text || title || href,
+            source: "markdown-image"
+          });
+          return marker;
+        }
+        const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+        return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}"${titleAttr}>`;
+      },
+      codespan({ text }) {
+        return `<code>${escapeHtml(text)}</code>`;
+      },
+      code({ text, lang }) {
+        const langAttr = lang ? ` class="language-${escapeHtml(lang)}"` : "";
+        const codeBlockIndex = codeBlockCount++;
+        return `<pre><code${langAttr}>${codeBlockStartMarker(codeBlockIndex)}
+${escapeHtml(text)}
+${codeBlockEndMarker(codeBlockIndex)}</code></pre>
+`;
+      }
+    }
+  });
+  const rendered = marked.parse(preprocessed);
+  if (typeof rendered !== "string") {
+    throw new Error(
+      "Google Docs renderer returned a promise. The plugin expects synchronous rendering."
+    );
+  }
+  return {
+    html: buildDocumentHtml(options.title, rendered.trim()),
+    mediaRefs,
+    warnings
+  };
+}
+
+// src/services/repo-inventory.ts
+var SOURCE_KIND_ORDER = {
+  "tracked-directory": 0,
+  "tracked-file": 1,
+  "scanned-directory": 2,
+  "orphan-mirror": 3
+};
+function buildEntryId(sourceKind, vaultPath) {
+  return `${sourceKind}:${normalizeVaultPath(vaultPath)}`;
+}
+function resolveUnpublishState(liveOriginUrl, storedOriginUrl) {
+  const githubRepoSlug = (liveOriginUrl ? parseGitHubRepoSlug(liveOriginUrl) : null) ?? (storedOriginUrl ? parseGitHubRepoSlug(storedOriginUrl) : null);
+  if (githubRepoSlug) {
+    return {
+      githubRepoSlug,
+      canUnpublish: true
+    };
+  }
+  const knownOrigin = liveOriginUrl ?? storedOriginUrl;
+  if (knownOrigin) {
+    return {
+      githubRepoSlug: null,
+      canUnpublish: false,
+      disabledReason: "Only GitHub remotes can be unpublished."
+    };
+  }
+  return {
+    githubRepoSlug: null,
+    canUnpublish: false,
+    disabledReason: "No GitHub remote is known for this repo."
+  };
+}
+async function buildEntry(sourceKind, target, vaultBasePath, resolveRepoState) {
+  const localRepoVaultPath = normalizeVaultPath(target.mirrorPath ?? target.vaultPath);
+  const localRepoPath = absolutePathForVaultPath(vaultBasePath, localRepoVaultPath);
+  const repoState = await resolveRepoState(localRepoPath);
+  const liveOriginUrl = repoState.originUrl ?? null;
+  const storedOriginUrl = target.storedOriginUrl ?? null;
+  const unpublishState = resolveUnpublishState(liveOriginUrl, storedOriginUrl);
+  return {
+    id: buildEntryId(sourceKind, target.vaultPath),
+    sourceKind,
+    targetType: target.targetType,
+    vaultPath: normalizeVaultPath(target.vaultPath),
+    mirrorPath: target.mirrorPath ? normalizeVaultPath(target.mirrorPath) : void 0,
+    repoName: target.repoName,
+    visibility: target.visibility,
+    localRepoPath,
+    localRepoVaultPath,
+    liveOriginUrl,
+    storedOriginUrl,
+    hasLocalGit: repoState.hasLocalGit,
+    hasOrigin: repoState.hasOrigin,
+    isGitHubOrigin: repoState.isGitHubOrigin,
+    ...unpublishState
+  };
+}
+async function buildRepoInventory(options) {
+  const trackedDirectoryPaths = /* @__PURE__ */ new Set();
+  const trackedMirrorPaths = /* @__PURE__ */ new Set();
+  const work = [];
+  for (const record of options.trackedTargets) {
+    if (record.targetType === "directory") {
+      trackedDirectoryPaths.add(normalizeVaultPath(record.vaultPath));
+      work.push(
+        buildEntry(
+          "tracked-directory",
+          {
+            targetType: "directory",
+            vaultPath: record.vaultPath,
+            repoName: record.repoName,
+            visibility: record.visibility,
+            storedOriginUrl: record.originUrl
+          },
+          options.vaultBasePath,
+          options.resolveRepoState
+        )
+      );
+      continue;
+    }
+    trackedMirrorPaths.add(normalizeVaultPath(record.mirrorPath ?? ""));
+    work.push(
+      buildEntry(
+        "tracked-file",
+        {
+          targetType: "file",
+          vaultPath: record.vaultPath,
+          mirrorPath: record.mirrorPath,
+          repoName: record.repoName,
+          visibility: record.visibility,
+          storedOriginUrl: record.originUrl
+        },
+        options.vaultBasePath,
+        options.resolveRepoState
+      )
+    );
+  }
+  for (const repoPath of options.standaloneRepoPaths) {
+    const normalizedRepoPath = normalizeVaultPath(repoPath);
+    if (trackedDirectoryPaths.has(normalizedRepoPath)) {
+      continue;
+    }
+    work.push(
+      buildEntry(
+        "scanned-directory",
+        {
+          targetType: "directory",
+          vaultPath: normalizedRepoPath
+        },
+        options.vaultBasePath,
+        options.resolveRepoState
+      )
+    );
+  }
+  for (const mirrorPath of options.orphanMirrorPaths) {
+    const normalizedMirrorPath = normalizeVaultPath(mirrorPath);
+    if (trackedMirrorPaths.has(normalizedMirrorPath)) {
+      continue;
+    }
+    work.push(
+      buildEntry(
+        "orphan-mirror",
+        {
+          targetType: "file",
+          vaultPath: normalizedMirrorPath,
+          mirrorPath: normalizedMirrorPath
+        },
+        options.vaultBasePath,
+        options.resolveRepoState
+      )
+    );
+  }
+  const entries = await Promise.all(work);
+  return entries.sort((left, right) => {
+    const kindOrder = SOURCE_KIND_ORDER[left.sourceKind] - SOURCE_KIND_ORDER[right.sourceKind];
+    if (kindOrder !== 0) {
+      return kindOrder;
+    }
+    return left.vaultPath.localeCompare(right.vaultPath);
+  });
+}
+
+// src/services/static-site-publisher.ts
+var import_promises3 = __toESM(require("node:fs/promises"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
+
+// src/utils/frontmatter.ts
+function asString2(value) {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value).trim();
+  }
+  return null;
+}
+function validatePostFrontmatter(raw) {
+  const errors = [];
+  const source = (raw && typeof raw === "object" ? raw : {}) ?? {};
+  const title = asString2(source.title);
+  if (!title) {
+    errors.push({ field: "title", message: "title is required" });
+  }
+  const description = asString2(source.description);
+  if (!description) {
+    errors.push({ field: "description", message: "description is required" });
+  }
+  const date = asString2(source.date);
+  if (!date) {
+    errors.push({
+      field: "date",
+      message: "date is required (e.g. 2026-03-18T18:25Z)"
+    });
+  }
+  let slugRaw = asString2(source.slug);
+  if (!slugRaw && title) {
+    slugRaw = sanitizeSlug(title);
+  }
+  if (!slugRaw) {
+    errors.push({ field: "slug", message: "slug is required" });
+  }
+  const sanitized = slugRaw ? sanitizeSlug(slugRaw) : "";
+  if (slugRaw && !isValidSlug(sanitized)) {
+    errors.push({
+      field: "slug",
+      message: `slug '${slugRaw}' is invalid. Use lowercase letters, numbers, and hyphens; avoid reserved names (blog, feed, static, assets, public).`
+    });
+  }
+  const hostCandidate = asString2(source.host) ?? asString2(source.hostId) ?? void 0;
+  if (errors.length > 0) {
+    return { ok: false, errors };
+  }
+  return {
+    ok: true,
+    value: {
+      title,
+      slug: sanitized,
+      date,
+      description,
+      hostId: hostCandidate ?? void 0
+    }
+  };
+}
+
+// src/services/markdown-renderer.ts
+function escapeHtml2(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
+}
+function isAbsoluteUrl2(href) {
   return /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(href);
 }
 function renderMarkdown(source) {
@@ -3087,21 +4400,21 @@ function renderMarkdown(source) {
       },
       link({ href, title, tokens }) {
         const inner = this.parser.parseInline(tokens);
-        const safeHref = isAbsoluteUrl(href) || href.startsWith("/") || href.startsWith("#") || href.startsWith("mailto:") ? href : href;
-        const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
-        return `<a href="${escapeHtml(safeHref)}"${titleAttr}>${inner}</a>`;
+        const safeHref = isAbsoluteUrl2(href) || href.startsWith("/") || href.startsWith("#") || href.startsWith("mailto:") ? href : href;
+        const titleAttr = title ? ` title="${escapeHtml2(title)}"` : "";
+        return `<a href="${escapeHtml2(safeHref)}"${titleAttr}>${inner}</a>`;
       },
       image({ href, title, text }) {
-        const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
-        return `<img src="${escapeHtml(href)}" alt="${escapeHtml(text)}"${titleAttr} />`;
+        const titleAttr = title ? ` title="${escapeHtml2(title)}"` : "";
+        return `<img src="${escapeHtml2(href)}" alt="${escapeHtml2(text)}"${titleAttr} />`;
       },
       codespan({ text }) {
-        return `<code>${escapeHtml(text)}</code>`;
+        return `<code>${escapeHtml2(text)}</code>`;
       },
       code({ text, lang }) {
-        const body = escapeHtml(text);
+        const body = escapeHtml2(text);
         if (lang) {
-          return `<pre><code class="language-${escapeHtml(lang)}">${body}
+          return `<pre><code class="language-${escapeHtml2(lang)}">${body}
 </code></pre>
 `;
         }
@@ -3129,6 +4442,32 @@ ${body}</blockquote>
   return {
     html: rendered.trim(),
     warnings
+  };
+}
+
+// src/services/static-site-presets.ts
+var APM_OVERFLOW_HOST_ID = "apm-overflow";
+var APM_OVERFLOW_REPO_ROOT = "/Users/islamtayeb/Documents/GitHub/personal-website";
+function createApmOverflowPreset(repoRoot = APM_OVERFLOW_REPO_ROOT) {
+  return {
+    id: APM_OVERFLOW_HOST_ID,
+    name: "APM Overflow",
+    repoRoot,
+    siteSubdir: "apmoverflow",
+    postPathTemplate: "{slug}/index.html",
+    templateRelPath: "_template.html",
+    contentMarker: "<p>Article content...</p>",
+    tokens: {
+      title: "POST_TITLE",
+      slug: "POST_SLUG",
+      description: "POST_DESCRIPTION",
+      dateIso: "YYYY-MM-DDTHH:MMZ",
+      dateDisplay: "Mon DD, YYYY"
+    },
+    commitMessagePublish: "apmoverflow: publish {slug}",
+    commitMessageUnpublish: "apmoverflow: unpublish {slug}",
+    remote: "origin",
+    publicBaseUrl: "https://apmoverflow.xyz"
   };
 }
 
@@ -3201,7 +4540,7 @@ var TemplateRenderError = class extends Error {
     this.name = "TemplateRenderError";
   }
 };
-function escapeHtml2(text) {
+function escapeHtml3(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 }
 function replaceAll(source, token, replacement) {
@@ -3246,9 +4585,9 @@ function renderPost(input) {
   let output = templateText;
   output = replaceAll(output, dateIsoToken, dateIso);
   output = replaceAll(output, dateDisplayToken, dateDisplay);
-  output = replaceAll(output, titleToken, escapeHtml2(input.title));
+  output = replaceAll(output, titleToken, escapeHtml3(input.title));
   output = replaceAll(output, slugToken, input.slug);
-  output = replaceAll(output, descriptionToken, escapeHtml2(input.description));
+  output = replaceAll(output, descriptionToken, escapeHtml3(input.description));
   output = replaceAll(output, host.contentMarker, input.bodyHtml);
   return {
     html: output,
@@ -3277,9 +4616,35 @@ var StaticSitePublishError = class extends Error {
 function joinRelativePosix(...segments) {
   return segments.map((segment) => segment.replace(/^\/+|\/+$/g, "")).filter((segment) => segment.length > 0).join("/");
 }
+function normalizeGitHubRepoSlug(originUrl) {
+  const trimmed = originUrl.trim().replace(/\.git$/, "");
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+)$/i);
+  if (sshMatch) {
+    return `${sshMatch[1]}/${sshMatch[2]}`.toLowerCase();
+  }
+  const sshUrlMatch = trimmed.match(
+    /^ssh:\/\/git@github\.com\/([^/]+)\/(.+)$/i
+  );
+  if (sshUrlMatch) {
+    return `${sshUrlMatch[1]}/${sshUrlMatch[2]}`.toLowerCase();
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname.toLowerCase() !== "github.com") {
+      return null;
+    }
+    const segments = parsed.pathname.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
+    if (segments.length < 2) {
+      return null;
+    }
+    return `${segments[0]}/${segments[1]}`.toLowerCase();
+  } catch {
+    return null;
+  }
+}
 async function pathExists(targetPath) {
   try {
-    await import_promises2.default.stat(targetPath);
+    await import_promises3.default.stat(targetPath);
     return true;
   } catch {
     return false;
@@ -3287,7 +4652,7 @@ async function pathExists(targetPath) {
 }
 async function readFileIfExists(targetPath) {
   try {
-    return await import_promises2.default.readFile(targetPath, "utf8");
+    return await import_promises3.default.readFile(targetPath, "utf8");
   } catch (error) {
     const code = error.code;
     if (code === "ENOENT") {
@@ -3298,20 +4663,20 @@ async function readFileIfExists(targetPath) {
 }
 async function writeFileAtomic(targetPath, content) {
   const directory = import_node_path3.default.dirname(targetPath);
-  await import_promises2.default.mkdir(directory, { recursive: true });
+  await import_promises3.default.mkdir(directory, { recursive: true });
   const tempPath = `${targetPath}.tmp-${Date.now()}`;
-  await import_promises2.default.writeFile(tempPath, content, "utf8");
-  await import_promises2.default.rename(tempPath, targetPath);
+  await import_promises3.default.writeFile(tempPath, content, "utf8");
+  await import_promises3.default.rename(tempPath, targetPath);
 }
 async function removePostAndPruneParent(postAbsolutePath, postParentDir) {
   const existed = await pathExists(postAbsolutePath);
   if (existed) {
-    await import_promises2.default.rm(postAbsolutePath, { force: true });
+    await import_promises3.default.rm(postAbsolutePath, { force: true });
   }
   try {
-    const remaining = await import_promises2.default.readdir(postParentDir);
+    const remaining = await import_promises3.default.readdir(postParentDir);
     if (remaining.length === 0) {
-      await import_promises2.default.rmdir(postParentDir);
+      await import_promises3.default.rmdir(postParentDir);
     }
   } catch {
   }
@@ -3345,6 +4710,45 @@ var StaticSitePublisher = class {
         `Template not found at ${templatePath}. Check the host's site subdirectory and template path.`
       );
     }
+    await this.ensureApmOverflowGuard(host);
+  }
+  async ensureApmOverflowGuard(host) {
+    if (host.id !== APM_OVERFLOW_HOST_ID) {
+      return;
+    }
+    if (host.remote !== "origin") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish through the origin remote."
+      );
+    }
+    if (host.siteSubdir !== "apmoverflow") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish inside the apmoverflow site directory."
+      );
+    }
+    if (host.postPathTemplate !== "{slug}/index.html") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only write post files at apmoverflow/{slug}/index.html."
+      );
+    }
+    if (host.branch && host.branch !== "main") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish to the main branch."
+      );
+    }
+    const currentBranch = await this.gitService.getCurrentBranch(host.repoRoot);
+    if (currentBranch !== "main") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish when the local repo is on main."
+      );
+    }
+    const originUrl = await this.gitService.getOriginUrl(host.repoRoot);
+    const repoSlug = originUrl ? normalizeGitHubRepoSlug(originUrl) : null;
+    if (repoSlug !== "islamtayeb/personal-website") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish to GitHub repo IslamTayeb/personal-website."
+      );
+    }
   }
   async publish(input) {
     const { host, frontmatter, markdownBody, vaultPath, previousRecord } = input;
@@ -3360,7 +4764,7 @@ var StaticSitePublisher = class {
       host.siteSubdir,
       host.templateRelPath
     );
-    const templateText = await import_promises2.default.readFile(templatePath, "utf8");
+    const templateText = await import_promises3.default.readFile(templatePath, "utf8");
     const { html: bodyHtml, warnings } = renderMarkdown(markdownBody);
     let rendered;
     try {
@@ -3948,32 +5352,6 @@ var UnpublishConfirmModal = class extends import_obsidian7.Modal {
   }
 };
 
-// src/services/static-site-presets.ts
-var APM_OVERFLOW_HOST_ID = "apm-overflow";
-var APM_OVERFLOW_REPO_ROOT = "/Users/islamtayeb/Documents/GitHub/personal-website";
-function createApmOverflowPreset(repoRoot = APM_OVERFLOW_REPO_ROOT) {
-  return {
-    id: APM_OVERFLOW_HOST_ID,
-    name: "APM Overflow",
-    repoRoot,
-    siteSubdir: "apmoverflow",
-    postPathTemplate: "{slug}/index.html",
-    templateRelPath: "_template.html",
-    contentMarker: "<p>Article content...</p>",
-    tokens: {
-      title: "POST_TITLE",
-      slug: "POST_SLUG",
-      description: "POST_DESCRIPTION",
-      dateIso: "YYYY-MM-DDTHH:MMZ",
-      dateDisplay: "Mon DD, YYYY"
-    },
-    commitMessagePublish: "apmoverflow: publish {slug}",
-    commitMessageUnpublish: "apmoverflow: unpublish {slug}",
-    remote: "origin",
-    publicBaseUrl: "https://apmoverflow.xyz"
-  };
-}
-
 // src/settings/vault-publisher-setting-tab.ts
 var VaultPublisherSettingTab = class extends import_obsidian8.PluginSettingTab {
   constructor(app, plugin) {
@@ -4039,6 +5417,7 @@ var VaultPublisherSettingTab = class extends import_obsidian8.PluginSettingTab {
           this.renderGroup(containerEl, group);
         }
       }
+      this.renderGoogleDocsSection(containerEl);
       this.renderStaticSiteHostsSection(containerEl);
     } catch (error) {
       if (renderNonce !== this.renderNonce) {
@@ -4051,6 +5430,7 @@ var VaultPublisherSettingTab = class extends import_obsidian8.PluginSettingTab {
         cls: "vault-publisher-empty",
         text: this.formatError(error)
       });
+      this.renderGoogleDocsSection(containerEl);
       this.renderStaticSiteHostsSection(containerEl);
     }
   }
@@ -4139,6 +5519,68 @@ var VaultPublisherSettingTab = class extends import_obsidian8.PluginSettingTab {
     button.setDisabled(true);
     await this.vaultPublisher.unpublishRepo(entry);
     this.display();
+  }
+  renderGoogleDocsSection(containerEl) {
+    const sectionEl = containerEl.createDiv({ cls: "vault-publisher-section" });
+    sectionEl.createEl("h3", { text: "Google Docs" });
+    sectionEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: "Upload the active Markdown note to one Google Doc per note. Local image and video embeds are uploaded to Drive; supported images are inserted inline and videos are linked."
+    });
+    const settings = this.vaultPublisher.getGoogleDocsSettings();
+    const publishCount = this.vaultPublisher.getConfigStore().getGoogleDocsPublishes().length;
+    new import_obsidian8.Setting(sectionEl).setName("Status").setDesc(
+      settings.refreshToken ? `Authorized. Tracked Google Docs: ${publishCount}.` : `Not authorized. Tracked Google Docs: ${publishCount}.`
+    ).addButton((button) => {
+      button.setButtonText(settings.refreshToken ? "Re-authorize" : "Authorize").onClick(async () => {
+        button.setDisabled(true);
+        button.setButtonText("Opening...");
+        await this.vaultPublisher.authorizeGoogleDocs();
+        this.display();
+      });
+    }).addButton((button) => {
+      button.setButtonText("Forget token");
+      button.setDisabled(!settings.refreshToken);
+      button.onClick(async () => {
+        button.setDisabled(true);
+        await this.vaultPublisher.forgetGoogleDocsAuth();
+        this.display();
+      });
+    });
+    new import_obsidian8.Setting(sectionEl).setName("OAuth credentials JSON path").setDesc(
+      "Absolute path to a Google OAuth desktop-client credentials JSON file."
+    ).addText((text) => {
+      text.setPlaceholder("/Users/you/Downloads/client_secret.json");
+      text.setValue(settings.credentialsPath ?? "");
+      text.inputEl.style.width = "100%";
+      text.onChange((value) => {
+        void this.vaultPublisher.updateGoogleDocsSettings({
+          credentialsPath: value.trim() || void 0
+        });
+      });
+    });
+    new import_obsidian8.Setting(sectionEl).setName("Google Drive folder ID").setDesc("New Google Docs are created in this Drive folder.").addText((text) => {
+      text.setPlaceholder("Drive folder ID");
+      text.setValue(settings.docsFolderId ?? "");
+      text.inputEl.style.width = "100%";
+      text.onChange((value) => {
+        void this.vaultPublisher.updateGoogleDocsSettings({
+          docsFolderId: value.trim() || void 0
+        });
+      });
+    });
+    new import_obsidian8.Setting(sectionEl).setName("Generated media folder ID").setDesc(
+      "Optional. Leave blank and the plugin will create 'Vault Publisher Media' under the Drive folder."
+    ).addText((text) => {
+      text.setPlaceholder("Created automatically");
+      text.setValue(settings.mediaFolderId ?? "");
+      text.inputEl.style.width = "100%";
+      text.onChange((value) => {
+        void this.vaultPublisher.updateGoogleDocsSettings({
+          mediaFolderId: value.trim() || void 0
+        });
+      });
+    });
   }
   renderStaticSiteHostsSection(containerEl) {
     const sectionEl = containerEl.createDiv({ cls: "vault-publisher-section" });
@@ -4577,6 +6019,7 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
     await this.configStore.load();
     this.gitService = new GitService();
     this.staticSitePublisher = new StaticSitePublisher(this.gitService);
+    this.googleDocsPublisher = new GoogleDocsPublisher();
     this.addSettingTab(new VaultPublisherSettingTab(this.app, this));
     this.addCommand({
       id: "publish-directory",
@@ -4620,6 +6063,15 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
       callback: () => {
         void this.executeExclusive(async () => {
           await this.handleUnpublishFromStaticSite();
+        });
+      }
+    });
+    this.addCommand({
+      id: "upload-note-to-google-docs",
+      name: "Upload Note to Google Docs",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handleUploadToGoogleDocs();
         });
       }
     });
@@ -4867,7 +6319,7 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
       return null;
     }
     try {
-      const stats = await import_promises3.default.stat(absolutePath);
+      const stats = await import_promises4.default.stat(absolutePath);
       if (stats.isDirectory() && this.isSelectableDirectory(normalizedPath)) {
         return {
           targetType: "directory",
@@ -4902,7 +6354,7 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
       }
       let entries;
       try {
-        entries = await import_promises3.default.readdir(absoluteDirectory, {
+        entries = await import_promises4.default.readdir(absoluteDirectory, {
           withFileTypes: true,
           encoding: "utf8"
         });
@@ -5061,6 +6513,61 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
       }
     }
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+  async writeClipboardText(text) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+      }
+    }
+    if (typeof require === "function") {
+      try {
+        const electron = require("electron");
+        if (electron.clipboard?.writeText) {
+          electron.clipboard.writeText(text);
+          return;
+        }
+      } catch {
+      }
+    }
+    new import_obsidian9.Notice("Could not copy Google Doc link to clipboard.", 8e3);
+  }
+  showGoogleDocsPublishedNotice(messagePrefix, url) {
+    const fragment = document.createDocumentFragment();
+    fragment.append(`${messagePrefix}: `);
+    const linkEl = document.createElement("a");
+    linkEl.href = url;
+    linkEl.textContent = url;
+    linkEl.target = "_blank";
+    linkEl.rel = "noopener noreferrer";
+    linkEl.className = "vault-publisher-notice-link";
+    fragment.append(linkEl);
+    fragment.append(" (copied)");
+    const notice = new import_obsidian9.Notice(fragment, 1e4);
+    notice.noticeEl.addClass("vault-publisher-clickable-notice");
+    notice.noticeEl.setAttribute("aria-label", `Open ${url}`);
+    notice.noticeEl.title = "Open Google Doc";
+    const openDoc = (event) => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      void this.openExternalUrl(url);
+      notice.hide();
+    };
+    linkEl.addEventListener("click", (event) => {
+      openDoc(event);
+    });
+    notice.noticeEl.addEventListener("click", (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (event.target instanceof HTMLElement && event.target.closest("a")) {
+        return;
+      }
+      openDoc(event);
+    });
+    void this.openExternalUrl(url);
   }
   showPublishedRepoNotice(messagePrefix, repoUrl, suffix = "", autoOpen = false) {
     let notice = null;
@@ -5532,6 +7039,10 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
       new import_obsidian9.Notice(error.message, 15e3);
       return;
     }
+    if (error instanceof GoogleDocsPublishError) {
+      new import_obsidian9.Notice(error.message, 15e3);
+      return;
+    }
     if (error instanceof Error) {
       new import_obsidian9.Notice(error.message, 12e3);
       return;
@@ -5544,6 +7055,202 @@ var VaultPublisherPlugin = class extends import_obsidian9.Plugin {
   }
   async saveConfig() {
     await this.configStore.save();
+  }
+  getGoogleDocsSettings() {
+    return this.configStore.getGoogleDocsSettings();
+  }
+  async updateGoogleDocsSettings(settings) {
+    this.configStore.updateGoogleDocsSettings(settings);
+    await this.configStore.save();
+  }
+  async authorizeGoogleDocs() {
+    const settings = this.configStore.getGoogleDocsSettings();
+    try {
+      const refreshToken = await this.googleDocsPublisher.authorizeWithLocalServer(
+        settings,
+        (url) => this.openExternalUrl(url)
+      );
+      this.configStore.updateGoogleDocsSettings({ refreshToken });
+      await this.configStore.save();
+      new import_obsidian9.Notice("Google Docs authorization saved.", 8e3);
+    } catch (error) {
+      this.showCommandError(error);
+    }
+  }
+  async forgetGoogleDocsAuth() {
+    this.configStore.clearGoogleDocsRefreshToken();
+    await this.configStore.save();
+    new import_obsidian9.Notice("Forgot Google Docs authorization token.", 6e3);
+  }
+  async handleUploadToGoogleDocs() {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new import_obsidian9.Notice(
+        "Open the Markdown note you want to upload, then run this command.",
+        8e3
+      );
+      return;
+    }
+    const settings = this.configStore.getGoogleDocsSettings();
+    if (!settings.credentialsPath || !settings.docsFolderId) {
+      new import_obsidian9.Notice(
+        "Configure Google OAuth credentials and a Drive folder ID in Vault Publisher settings first.",
+        1e4
+      );
+      return;
+    }
+    if (!settings.refreshToken) {
+      new import_obsidian9.Notice(
+        "Authorize Google Docs in Vault Publisher settings before uploading.",
+        1e4
+      );
+      return;
+    }
+    const cache = this.app.metadataCache.getFileCache(activeFile);
+    const rawFrontmatter = cache?.frontmatter ?? {};
+    const title = typeof rawFrontmatter.title === "string" && rawFrontmatter.title.trim().length > 0 ? rawFrontmatter.title.trim() : activeFile.basename;
+    const fileContent = await this.app.vault.read(activeFile);
+    const markdownBody = this.stripFrontmatter(fileContent);
+    const rendered = renderGoogleDocsMarkdown(markdownBody, { title });
+    const preparedMedia = await this.prepareGoogleDocsMedia(
+      activeFile,
+      rendered.mediaRefs
+    );
+    const previousRecord = this.configStore.findGoogleDocsPublish(
+      activeFile.path
+    );
+    new import_obsidian9.Notice(`Uploading ${activeFile.path} to Google Docs...`, 5e3);
+    try {
+      const result = await this.googleDocsPublisher.publish({
+        settings,
+        title,
+        html: rendered.html,
+        vaultPath: activeFile.path,
+        previousRecord,
+        mediaUploads: preparedMedia.uploads,
+        missingMedia: preparedMedia.missing
+      });
+      this.configStore.updateGoogleDocsSettings(result.settings);
+      this.configStore.upsertGoogleDocsPublish(result.record);
+      await this.configStore.save();
+      const warnings = [
+        ...rendered.warnings,
+        ...preparedMedia.warnings,
+        ...result.warnings
+      ];
+      for (const warning of warnings) {
+        new import_obsidian9.Notice(`Warning: ${warning}`, 9e3);
+      }
+      await this.writeClipboardText(result.record.docUrl);
+      this.showGoogleDocsPublishedNotice(
+        result.status === "created" ? "Created Google Doc" : "Updated Google Doc",
+        result.record.docUrl
+      );
+    } catch (error) {
+      this.showCommandError(error);
+    }
+  }
+  async prepareGoogleDocsMedia(sourceFile, refs) {
+    const uploads = [];
+    const missing = [];
+    const warnings = [];
+    for (const ref of refs) {
+      const resolved = this.resolveMediaFile(sourceFile, ref);
+      if (!resolved) {
+        const message = `Could not resolve media ${ref.original}.`;
+        missing.push({ marker: ref.marker, original: ref.original, message });
+        continue;
+      }
+      const mimeType = this.getMimeType(resolved.path);
+      const kind = this.getAssetKind(mimeType);
+      const bytes = Buffer.from(await this.app.vault.readBinary(resolved));
+      const checksum = import_node_crypto.default.createHash("sha256").update(bytes).digest("hex");
+      const inlineSupported = mimeType === "image/png" || mimeType === "image/jpeg" || mimeType === "image/gif";
+      if (kind === "image" && !inlineSupported) {
+        warnings.push(
+          `${ref.original} will be uploaded to Drive and linked because Google Docs API only supports PNG, JPEG, and GIF inline images.`
+        );
+      }
+      uploads.push({
+        marker: ref.marker,
+        original: ref.original,
+        vaultPath: resolved.path,
+        name: import_node_path4.default.posix.basename(resolved.path),
+        mimeType,
+        checksum,
+        kind,
+        bytes,
+        inlineSupported
+      });
+    }
+    return { uploads, missing, warnings };
+  }
+  resolveMediaFile(sourceFile, ref) {
+    const target = this.cleanMediaTarget(ref.target);
+    if (!target || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) {
+      return null;
+    }
+    if (ref.source === "obsidian-embed") {
+      const linked = this.app.metadataCache.getFirstLinkpathDest(
+        target,
+        sourceFile.path
+      );
+      if (linked instanceof import_obsidian9.TFile) {
+        return linked;
+      }
+    }
+    const sourceParent = normalizeVaultPath(sourceFile.parent?.path ?? "");
+    const candidates = /* @__PURE__ */ new Set();
+    candidates.add(normalizeVaultPath(target));
+    if (target.startsWith("/")) {
+      candidates.add(normalizeVaultPath(target.slice(1)));
+    } else if (sourceParent) {
+      candidates.add(normalizeVaultPath(`${sourceParent}/${target}`));
+    }
+    for (const candidate of candidates) {
+      const abstractFile = this.app.vault.getAbstractFileByPath(candidate);
+      if (abstractFile instanceof import_obsidian9.TFile) {
+        return abstractFile;
+      }
+    }
+    return null;
+  }
+  cleanMediaTarget(target) {
+    const withoutAlias = target.split("|")[0] ?? target;
+    const withoutHeading = withoutAlias.split("#")[0] ?? withoutAlias;
+    const withoutQuery = withoutHeading.split("?")[0] ?? withoutHeading;
+    try {
+      return decodeURIComponent(withoutQuery.trim());
+    } catch {
+      return withoutQuery.trim();
+    }
+  }
+  getMimeType(vaultPath) {
+    const extension = import_node_path4.default.posix.extname(vaultPath).toLowerCase();
+    const byExtension = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".svg": "image/svg+xml",
+      ".mp4": "video/mp4",
+      ".m4v": "video/x-m4v",
+      ".mov": "video/quicktime",
+      ".webm": "video/webm",
+      ".avi": "video/x-msvideo",
+      ".mkv": "video/x-matroska"
+    };
+    return byExtension[extension] ?? "application/octet-stream";
+  }
+  getAssetKind(mimeType) {
+    if (mimeType.startsWith("image/")) {
+      return "image";
+    }
+    if (mimeType.startsWith("video/")) {
+      return "video";
+    }
+    return "other";
   }
   getStaticSiteHosts() {
     return this.configStore.getStaticSiteHosts();

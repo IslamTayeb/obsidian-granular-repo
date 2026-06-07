@@ -37,6 +37,13 @@ const APM_TEMPLATE = `<!doctype html>
   </body>
 </html>`;
 
+function createTestHost(repoRoot: string) {
+  return {
+    ...createApmOverflowPreset(repoRoot),
+    id: "test-static-site",
+  };
+}
+
 describe("StaticSitePublisher (integration)", () => {
   let tempRoot: string;
   let repoRoot: string;
@@ -72,7 +79,7 @@ describe("StaticSitePublisher (integration)", () => {
 
   it("writes a post, commits, and pushes only that file", async () => {
     const publisher = new StaticSitePublisher(new GitService());
-    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+    const host = createTestHost(repoRoot);
 
     const result = await publisher.publish({
       host,
@@ -108,7 +115,7 @@ describe("StaticSitePublisher (integration)", () => {
 
   it("skips the commit when rendered output is unchanged", async () => {
     const publisher = new StaticSitePublisher(new GitService());
-    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+    const host = createTestHost(repoRoot);
     const frontmatter = {
       title: "On Closing Doors",
       slug: "on-closing-doors",
@@ -140,7 +147,7 @@ describe("StaticSitePublisher (integration)", () => {
 
   it("removes the old post when slug changes", async () => {
     const publisher = new StaticSitePublisher(new GitService());
-    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+    const host = createTestHost(repoRoot);
 
     await publisher.publish({
       host,
@@ -188,7 +195,7 @@ describe("StaticSitePublisher (integration)", () => {
 
   it("unpublishes by deleting the post and pushing the removal", async () => {
     const publisher = new StaticSitePublisher(new GitService());
-    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+    const host = createTestHost(repoRoot);
 
     await publisher.publish({
       host,
@@ -223,7 +230,7 @@ describe("StaticSitePublisher (integration)", () => {
 
   it("rejects frontmatter missing required fields", async () => {
     const publisher = new StaticSitePublisher(new GitService());
-    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+    const host = createTestHost(repoRoot);
 
     await expect(
       publisher.publish({
@@ -233,5 +240,62 @@ describe("StaticSitePublisher (integration)", () => {
         vaultPath: "posts/broken.md",
       }),
     ).rejects.toBeInstanceOf(StaticSitePublishError);
+  });
+
+  it("allows the APM Overflow guard for the expected repo on main", async () => {
+    await runGit(repoRoot, [
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/IslamTayeb/personal-website.git",
+    ]);
+    const publisher = new StaticSitePublisher(new GitService());
+    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+
+    await expect(publisher.ensurePrerequisites(host)).resolves.toBeUndefined();
+  });
+
+  it("rejects APM Overflow when the remote is not the personal website repo", async () => {
+    const publisher = new StaticSitePublisher(new GitService());
+    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+
+    await expect(publisher.ensurePrerequisites(host)).rejects.toThrow(
+      "IslamTayeb/personal-website",
+    );
+  });
+
+  it("rejects APM Overflow when the local branch is not main", async () => {
+    await runGit(repoRoot, [
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/IslamTayeb/personal-website.git",
+    ]);
+    await runGit(repoRoot, ["checkout", "-b", "draft"]);
+    const publisher = new StaticSitePublisher(new GitService());
+    const host = { ...createApmOverflowPreset(repoRoot), repoRoot };
+
+    await expect(publisher.ensurePrerequisites(host)).rejects.toThrow(
+      "local repo is on main",
+    );
+  });
+
+  it("rejects APM Overflow writes outside the expected post path", async () => {
+    await runGit(repoRoot, [
+      "remote",
+      "set-url",
+      "origin",
+      "https://github.com/IslamTayeb/personal-website.git",
+    ]);
+    const publisher = new StaticSitePublisher(new GitService());
+    const host = {
+      ...createApmOverflowPreset(repoRoot),
+      repoRoot,
+      postPathTemplate: "posts/{slug}.html",
+    };
+
+    await expect(publisher.ensurePrerequisites(host)).rejects.toThrow(
+      "apmoverflow/{slug}/index.html",
+    );
   });
 });

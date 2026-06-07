@@ -104,6 +104,7 @@ export class VaultPublisherSettingTab extends PluginSettingTab {
         }
       }
 
+      this.renderGoogleDocsSection(containerEl);
       this.renderStaticSiteHostsSection(containerEl);
     } catch (error: unknown) {
       if (renderNonce !== this.renderNonce) {
@@ -117,6 +118,7 @@ export class VaultPublisherSettingTab extends PluginSettingTab {
         cls: "vault-publisher-empty",
         text: this.formatError(error),
       });
+      this.renderGoogleDocsSection(containerEl);
       this.renderStaticSiteHostsSection(containerEl);
     }
   }
@@ -230,6 +232,93 @@ export class VaultPublisherSettingTab extends PluginSettingTab {
 
     await this.vaultPublisher.unpublishRepo(entry);
     this.display();
+  }
+
+  private renderGoogleDocsSection(containerEl: HTMLElement): void {
+    const sectionEl = containerEl.createDiv({ cls: "vault-publisher-section" });
+    sectionEl.createEl("h3", { text: "Google Docs" });
+    sectionEl.createEl("p", {
+      cls: "vault-publisher-section-description",
+      text: "Upload the active Markdown note to one Google Doc per note. Local image and video embeds are uploaded to Drive; supported images are inserted inline and videos are linked.",
+    });
+
+    const settings = this.vaultPublisher.getGoogleDocsSettings();
+    const publishCount = this.vaultPublisher
+      .getConfigStore()
+      .getGoogleDocsPublishes().length;
+
+    new Setting(sectionEl)
+      .setName("Status")
+      .setDesc(
+        settings.refreshToken
+          ? `Authorized. Tracked Google Docs: ${publishCount}.`
+          : `Not authorized. Tracked Google Docs: ${publishCount}.`,
+      )
+      .addButton((button) => {
+        button
+          .setButtonText(settings.refreshToken ? "Re-authorize" : "Authorize")
+          .onClick(async () => {
+            button.setDisabled(true);
+            button.setButtonText("Opening...");
+            await this.vaultPublisher.authorizeGoogleDocs();
+            this.display();
+          });
+      })
+      .addButton((button) => {
+        button.setButtonText("Forget token");
+        button.setDisabled(!settings.refreshToken);
+        button.onClick(async () => {
+          button.setDisabled(true);
+          await this.vaultPublisher.forgetGoogleDocsAuth();
+          this.display();
+        });
+      });
+
+    new Setting(sectionEl)
+      .setName("OAuth credentials JSON path")
+      .setDesc(
+        "Absolute path to a Google OAuth desktop-client credentials JSON file.",
+      )
+      .addText((text) => {
+        text.setPlaceholder("/Users/you/Downloads/client_secret.json");
+        text.setValue(settings.credentialsPath ?? "");
+        text.inputEl.style.width = "100%";
+        text.onChange((value) => {
+          void this.vaultPublisher.updateGoogleDocsSettings({
+            credentialsPath: value.trim() || undefined,
+          });
+        });
+      });
+
+    new Setting(sectionEl)
+      .setName("Google Drive folder ID")
+      .setDesc("New Google Docs are created in this Drive folder.")
+      .addText((text) => {
+        text.setPlaceholder("Drive folder ID");
+        text.setValue(settings.docsFolderId ?? "");
+        text.inputEl.style.width = "100%";
+        text.onChange((value) => {
+          void this.vaultPublisher.updateGoogleDocsSettings({
+            docsFolderId: value.trim() || undefined,
+          });
+        });
+      });
+
+    new Setting(sectionEl)
+      .setName("Generated media folder ID")
+      .setDesc(
+        "Optional. Leave blank and the plugin will create 'Vault Publisher Media' under the Drive folder.",
+      )
+      .addText((text) => {
+        text.setPlaceholder("Created automatically");
+        text.setValue(settings.mediaFolderId ?? "");
+        text.inputEl.style.width = "100%";
+        text.onChange((value) => {
+          void this.vaultPublisher.updateGoogleDocsSettings({
+            mediaFolderId: value.trim() || undefined,
+          });
+        });
+      });
   }
 
   private renderStaticSiteHostsSection(containerEl: HTMLElement): void {

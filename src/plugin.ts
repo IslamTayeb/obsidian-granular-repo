@@ -15,6 +15,16 @@ import { StaticSiteUnpublishConfirmModal } from "./modals/static-site-unpublish-
 import { VisibilityModal } from "./modals/visibility-modal";
 import { ConfigStore } from "./services/config-store";
 import { GitCommandError, GitService } from "./services/git-service";
+import {
+  GoogleDocsMediaUpload,
+  GoogleDocsMissingMedia,
+  GoogleDocsPublishError,
+  GoogleDocsPublisher,
+} from "./services/google-docs-publisher";
+import {
+  GoogleDocsMediaRef,
+  renderGoogleDocsMarkdown,
+} from "./services/google-docs-renderer";
 import { buildRepoInventory } from "./services/repo-inventory";
 import {
   StaticSitePublishError,
@@ -22,6 +32,8 @@ import {
 } from "./services/static-site-publisher";
 import { VaultPublisherSettingTab } from "./settings/vault-publisher-setting-tab";
 import {
+  GoogleDocsAssetKind,
+  GoogleDocsSettings,
   PublishedTargetRecord,
   PublishTargetType,
   PushAllSummary,
@@ -61,6 +73,9 @@ type ElectronModuleLike = {
   shell?: {
     openExternal?: (url: string) => Promise<void> | void;
   };
+  clipboard?: {
+    writeText?: (text: string) => void;
+  };
 };
 
 export default class VaultPublisherPlugin extends Plugin {
@@ -70,6 +85,8 @@ export default class VaultPublisherPlugin extends Plugin {
 
   private staticSitePublisher!: StaticSitePublisher;
 
+  private googleDocsPublisher!: GoogleDocsPublisher;
+
   private isRunning = false;
 
   async onload(): Promise<void> {
@@ -78,6 +95,7 @@ export default class VaultPublisherPlugin extends Plugin {
 
     this.gitService = new GitService();
     this.staticSitePublisher = new StaticSitePublisher(this.gitService);
+    this.googleDocsPublisher = new GoogleDocsPublisher();
     this.addSettingTab(new VaultPublisherSettingTab(this.app, this));
 
     this.addCommand({
@@ -126,6 +144,16 @@ export default class VaultPublisherPlugin extends Plugin {
       callback: () => {
         void this.executeExclusive(async () => {
           await this.handleUnpublishFromStaticSite();
+        });
+      },
+    });
+
+    this.addCommand({
+      id: "upload-note-to-google-docs",
+      name: "Upload Note to Google Docs",
+      callback: () => {
+        void this.executeExclusive(async () => {
+          await this.handleUploadToGoogleDocs();
         });
       },
     });
@@ -720,6 +748,73 @@ export default class VaultPublisherPlugin extends Plugin {
     }
 
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  private async writeClipboardText(text: string): Promise<void> {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Fall through to Electron clipboard.
+      }
+    }
+
+    if (typeof require === "function") {
+      try {
+        const electron = require("electron") as ElectronModuleLike;
+        if (electron.clipboard?.writeText) {
+          electron.clipboard.writeText(text);
+          return;
+        }
+      } catch {
+        // Fall through to the notice below.
+      }
+    }
+
+    new Notice("Could not copy Google Doc link to clipboard.", 8000);
+  }
+
+  private showGoogleDocsPublishedNotice(messagePrefix: string, url: string): void {
+    const fragment = document.createDocumentFragment();
+    fragment.append(`${messagePrefix}: `);
+
+    const linkEl = document.createElement("a");
+    linkEl.href = url;
+    linkEl.textContent = url;
+    linkEl.target = "_blank";
+    linkEl.rel = "noopener noreferrer";
+    linkEl.className = "vault-publisher-notice-link";
+    fragment.append(linkEl);
+    fragment.append(" (copied)");
+
+    const notice = new Notice(fragment, 10000);
+    notice.noticeEl.addClass("vault-publisher-clickable-notice");
+    notice.noticeEl.setAttribute("aria-label", `Open ${url}`);
+    notice.noticeEl.title = "Open Google Doc";
+
+    const openDoc = (event?: Event): void => {
+      event?.preventDefault();
+      event?.stopPropagation();
+      void this.openExternalUrl(url);
+      notice.hide();
+    };
+
+    linkEl.addEventListener("click", (event) => {
+      openDoc(event);
+    });
+
+    notice.noticeEl.addEventListener("click", (event) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (event.target instanceof HTMLElement && event.target.closest("a")) {
+        return;
+      }
+      openDoc(event);
+    });
+
+    void this.openExternalUrl(url);
   }
 
   private showPublishedRepoNotice(
@@ -1343,6 +1438,11 @@ export default class VaultPublisherPlugin extends Plugin {
       return;
     }
 
+    if (error instanceof GoogleDocsPublishError) {
+      new Notice(error.message, 15000);
+      return;
+    }
+
     if (error instanceof Error) {
       new Notice(error.message, 12000);
       return;
@@ -1359,6 +1459,256 @@ export default class VaultPublisherPlugin extends Plugin {
 
   async saveConfig(): Promise<void> {
     await this.configStore.save();
+  }
+
+  getGoogleDocsSettings(): GoogleDocsSettings {
+    return this.configStore.getGoogleDocsSettings();
+  }
+
+  async updateGoogleDocsSettings(
+    settings: GoogleDocsSettings,
+  ): Promise<void> {
+    this.configStore.updateGoogleDocsSettings(settings);
+    await this.configStore.save();
+  }
+
+  async authorizeGoogleDocs(): Promise<void> {
+    const settings = this.configStore.getGoogleDocsSettings();
+    try {
+      const refreshToken =
+        await this.googleDocsPublisher.authorizeWithLocalServer(
+          settings,
+          (url) => this.openExternalUrl(url),
+        );
+      this.configStore.updateGoogleDocsSettings({ refreshToken });
+      await this.configStore.save();
+      new Notice("Google Docs authorization saved.", 8000);
+    } catch (error: unknown) {
+      this.showCommandError(error);
+    }
+  }
+
+  async forgetGoogleDocsAuth(): Promise<void> {
+    this.configStore.clearGoogleDocsRefreshToken();
+    await this.configStore.save();
+    new Notice("Forgot Google Docs authorization token.", 6000);
+  }
+
+  private async handleUploadToGoogleDocs(): Promise<void> {
+    const activeFile = this.app.workspace.getActiveFile();
+    if (!activeFile || activeFile.extension !== "md") {
+      new Notice(
+        "Open the Markdown note you want to upload, then run this command.",
+        8000,
+      );
+      return;
+    }
+
+    const settings = this.configStore.getGoogleDocsSettings();
+    if (!settings.credentialsPath || !settings.docsFolderId) {
+      new Notice(
+        "Configure Google OAuth credentials and a Drive folder ID in Vault Publisher settings first.",
+        10000,
+      );
+      return;
+    }
+    if (!settings.refreshToken) {
+      new Notice(
+        "Authorize Google Docs in Vault Publisher settings before uploading.",
+        10000,
+      );
+      return;
+    }
+
+    const cache = this.app.metadataCache.getFileCache(activeFile);
+    const rawFrontmatter = (cache?.frontmatter ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const title =
+      typeof rawFrontmatter.title === "string" &&
+      rawFrontmatter.title.trim().length > 0
+        ? rawFrontmatter.title.trim()
+        : activeFile.basename;
+    const fileContent = await this.app.vault.read(activeFile);
+    const markdownBody = this.stripFrontmatter(fileContent);
+    const rendered = renderGoogleDocsMarkdown(markdownBody, { title });
+    const preparedMedia = await this.prepareGoogleDocsMedia(
+      activeFile,
+      rendered.mediaRefs,
+    );
+    const previousRecord = this.configStore.findGoogleDocsPublish(
+      activeFile.path,
+    );
+
+    new Notice(`Uploading ${activeFile.path} to Google Docs...`, 5000);
+
+    try {
+      const result = await this.googleDocsPublisher.publish({
+        settings,
+        title,
+        html: rendered.html,
+        vaultPath: activeFile.path,
+        previousRecord,
+        mediaUploads: preparedMedia.uploads,
+        missingMedia: preparedMedia.missing,
+      });
+
+      this.configStore.updateGoogleDocsSettings(result.settings);
+      this.configStore.upsertGoogleDocsPublish(result.record);
+      await this.configStore.save();
+
+      const warnings = [
+        ...rendered.warnings,
+        ...preparedMedia.warnings,
+        ...result.warnings,
+      ];
+      for (const warning of warnings) {
+        new Notice(`Warning: ${warning}`, 9000);
+      }
+
+      await this.writeClipboardText(result.record.docUrl);
+      this.showGoogleDocsPublishedNotice(
+        result.status === "created"
+          ? "Created Google Doc"
+          : "Updated Google Doc",
+        result.record.docUrl,
+      );
+    } catch (error: unknown) {
+      this.showCommandError(error);
+    }
+  }
+
+  private async prepareGoogleDocsMedia(
+    sourceFile: TFile,
+    refs: GoogleDocsMediaRef[],
+  ): Promise<{
+    uploads: GoogleDocsMediaUpload[];
+    missing: GoogleDocsMissingMedia[];
+    warnings: string[];
+  }> {
+    const uploads: GoogleDocsMediaUpload[] = [];
+    const missing: GoogleDocsMissingMedia[] = [];
+    const warnings: string[] = [];
+
+    for (const ref of refs) {
+      const resolved = this.resolveMediaFile(sourceFile, ref);
+      if (!resolved) {
+        const message = `Could not resolve media ${ref.original}.`;
+        missing.push({ marker: ref.marker, original: ref.original, message });
+        continue;
+      }
+
+      const mimeType = this.getMimeType(resolved.path);
+      const kind = this.getAssetKind(mimeType);
+      const bytes = Buffer.from(await this.app.vault.readBinary(resolved));
+      const checksum = crypto
+        .createHash("sha256")
+        .update(bytes)
+        .digest("hex");
+      const inlineSupported =
+        mimeType === "image/png" ||
+        mimeType === "image/jpeg" ||
+        mimeType === "image/gif";
+
+      if (kind === "image" && !inlineSupported) {
+        warnings.push(
+          `${ref.original} will be uploaded to Drive and linked because Google Docs API only supports PNG, JPEG, and GIF inline images.`,
+        );
+      }
+
+      uploads.push({
+        marker: ref.marker,
+        original: ref.original,
+        vaultPath: resolved.path,
+        name: path.posix.basename(resolved.path),
+        mimeType,
+        checksum,
+        kind,
+        bytes,
+        inlineSupported,
+      });
+    }
+
+    return { uploads, missing, warnings };
+  }
+
+  private resolveMediaFile(
+    sourceFile: TFile,
+    ref: GoogleDocsMediaRef,
+  ): TFile | null {
+    const target = this.cleanMediaTarget(ref.target);
+    if (!target || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(target)) {
+      return null;
+    }
+
+    if (ref.source === "obsidian-embed") {
+      const linked = this.app.metadataCache.getFirstLinkpathDest(
+        target,
+        sourceFile.path,
+      );
+      if (linked instanceof TFile) {
+        return linked;
+      }
+    }
+
+    const sourceParent = normalizeVaultPath(sourceFile.parent?.path ?? "");
+    const candidates = new Set<string>();
+    candidates.add(normalizeVaultPath(target));
+    if (target.startsWith("/")) {
+      candidates.add(normalizeVaultPath(target.slice(1)));
+    } else if (sourceParent) {
+      candidates.add(normalizeVaultPath(`${sourceParent}/${target}`));
+    }
+
+    for (const candidate of candidates) {
+      const abstractFile = this.app.vault.getAbstractFileByPath(candidate);
+      if (abstractFile instanceof TFile) {
+        return abstractFile;
+      }
+    }
+
+    return null;
+  }
+
+  private cleanMediaTarget(target: string): string {
+    const withoutAlias = target.split("|")[0] ?? target;
+    const withoutHeading = withoutAlias.split("#")[0] ?? withoutAlias;
+    const withoutQuery = withoutHeading.split("?")[0] ?? withoutHeading;
+    try {
+      return decodeURIComponent(withoutQuery.trim());
+    } catch {
+      return withoutQuery.trim();
+    }
+  }
+
+  private getMimeType(vaultPath: string): string {
+    const extension = path.posix.extname(vaultPath).toLowerCase();
+    const byExtension: Record<string, string> = {
+      ".png": "image/png",
+      ".jpg": "image/jpeg",
+      ".jpeg": "image/jpeg",
+      ".gif": "image/gif",
+      ".webp": "image/webp",
+      ".svg": "image/svg+xml",
+      ".mp4": "video/mp4",
+      ".m4v": "video/x-m4v",
+      ".mov": "video/quicktime",
+      ".webm": "video/webm",
+      ".avi": "video/x-msvideo",
+      ".mkv": "video/x-matroska",
+    };
+    return byExtension[extension] ?? "application/octet-stream";
+  }
+
+  private getAssetKind(mimeType: string): GoogleDocsAssetKind {
+    if (mimeType.startsWith("image/")) {
+      return "image";
+    }
+    if (mimeType.startsWith("video/")) {
+      return "video";
+    }
+    return "other";
   }
 
   getStaticSiteHosts(): StaticSiteHostConfig[] {

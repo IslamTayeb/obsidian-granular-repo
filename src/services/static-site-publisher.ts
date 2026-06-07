@@ -5,6 +5,7 @@ import { StaticSiteHostConfig, StaticSitePublishRecord } from "../types";
 import { validatePostFrontmatter } from "../utils/frontmatter";
 import { GitCommandError, GitService } from "./git-service";
 import { renderMarkdown } from "./markdown-renderer";
+import { APM_OVERFLOW_HOST_ID } from "./static-site-presets";
 import {
   renderPost,
   resolvePostRelativePath,
@@ -56,6 +57,38 @@ function joinRelativePosix(...segments: string[]): string {
     .map((segment) => segment.replace(/^\/+|\/+$/g, ""))
     .filter((segment) => segment.length > 0)
     .join("/");
+}
+
+function normalizeGitHubRepoSlug(originUrl: string): string | null {
+  const trimmed = originUrl.trim().replace(/\.git$/, "");
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+)$/i);
+  if (sshMatch) {
+    return `${sshMatch[1]}/${sshMatch[2]}`.toLowerCase();
+  }
+
+  const sshUrlMatch = trimmed.match(
+    /^ssh:\/\/git@github\.com\/([^/]+)\/(.+)$/i,
+  );
+  if (sshUrlMatch) {
+    return `${sshUrlMatch[1]}/${sshUrlMatch[2]}`.toLowerCase();
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname.toLowerCase() !== "github.com") {
+      return null;
+    }
+    const segments = parsed.pathname
+      .replace(/^\/+|\/+$/g, "")
+      .split("/")
+      .filter(Boolean);
+    if (segments.length < 2) {
+      return null;
+    }
+    return `${segments[0]}/${segments[1]}`.toLowerCase();
+  } catch {
+    return null;
+  }
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
@@ -143,6 +176,55 @@ export class StaticSitePublisher {
     if (!(await pathExists(templatePath))) {
       throw new StaticSitePublishError(
         `Template not found at ${templatePath}. Check the host's site subdirectory and template path.`,
+      );
+    }
+
+    await this.ensureApmOverflowGuard(host);
+  }
+
+  private async ensureApmOverflowGuard(
+    host: StaticSiteHostConfig,
+  ): Promise<void> {
+    if (host.id !== APM_OVERFLOW_HOST_ID) {
+      return;
+    }
+
+    if (host.remote !== "origin") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish through the origin remote.",
+      );
+    }
+
+    if (host.siteSubdir !== "apmoverflow") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish inside the apmoverflow site directory.",
+      );
+    }
+
+    if (host.postPathTemplate !== "{slug}/index.html") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only write post files at apmoverflow/{slug}/index.html.",
+      );
+    }
+
+    if (host.branch && host.branch !== "main") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish to the main branch.",
+      );
+    }
+
+    const currentBranch = await this.gitService.getCurrentBranch(host.repoRoot);
+    if (currentBranch !== "main") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish when the local repo is on main.",
+      );
+    }
+
+    const originUrl = await this.gitService.getOriginUrl(host.repoRoot);
+    const repoSlug = originUrl ? normalizeGitHubRepoSlug(originUrl) : null;
+    if (repoSlug !== "islamtayeb/personal-website") {
+      throw new StaticSitePublishError(
+        "APM Overflow can only publish to GitHub repo IslamTayeb/personal-website.",
       );
     }
   }

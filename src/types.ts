@@ -45,10 +45,42 @@ export interface StaticSitePublishRecord {
   lastCommitSha?: string;
 }
 
+export interface GoogleDocsSettings {
+  credentialsPath?: string;
+  refreshToken?: string;
+  docsFolderId?: string;
+  mediaFolderId?: string;
+}
+
+export type GoogleDocsAssetKind = "image" | "video" | "other";
+
+export interface GoogleDocsAssetRecord {
+  vaultPath: string;
+  fileId: string;
+  name: string;
+  mimeType: string;
+  checksum: string;
+  kind: GoogleDocsAssetKind;
+  webViewLink?: string;
+  webContentLink?: string;
+  lastUploaded: string;
+}
+
+export interface GoogleDocsPublishRecord {
+  vaultPath: string;
+  docId: string;
+  docUrl: string;
+  assetFolderId: string;
+  lastUploaded: string;
+  assets: GoogleDocsAssetRecord[];
+}
+
 export interface VaultPublisherData {
   publishedTargets: PublishedTargetRecord[];
   staticSiteHosts?: StaticSiteHostConfig[];
   staticSitePublishes?: StaticSitePublishRecord[];
+  googleDocs?: GoogleDocsSettings;
+  googleDocsPublishes?: GoogleDocsPublishRecord[];
 }
 
 export interface RepoState {

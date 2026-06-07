@@ -104,4 +104,67 @@ describe("ConfigStore", () => {
     expect(store.findTarget("file", "notes/idea.md")).toBeDefined();
     expect(store.removeTarget("directory", "notes/blog")).toBe(false);
   });
+
+  it("loads and updates Google Docs settings and per-note records", async () => {
+    const plugin = {
+      loadData: vi.fn(async () => ({
+        googleDocs: {
+          credentialsPath: "/Users/me/client.json",
+          refreshToken: "refresh-token",
+          docsFolderId: "docs-folder",
+          mediaFolderId: "media-folder",
+        },
+        googleDocsPublishes: [
+          {
+            vaultPath: "/notes/post.md",
+            docId: "doc-1",
+            docUrl: "https://docs.google.com/document/d/doc-1/edit",
+            assetFolderId: "assets-1",
+            lastUploaded: "2026-06-07T00:00:00Z",
+            assets: [
+              {
+                vaultPath: "/attachments/image.png",
+                fileId: "asset-1",
+                name: "image.png",
+                mimeType: "image/png",
+                checksum: "abc",
+                kind: "image",
+                webViewLink: "https://drive.google.com/file/d/asset-1/view",
+                webContentLink: "https://drive.google.com/uc?id=asset-1",
+                lastUploaded: "2026-06-07T00:00:00Z",
+              },
+            ],
+          },
+        ],
+      })),
+      saveData: vi.fn(async () => undefined),
+    } as any;
+
+    const store = new ConfigStore(plugin);
+    await store.load();
+
+    expect(store.getGoogleDocsSettings().docsFolderId).toBe("docs-folder");
+    expect(store.findGoogleDocsPublish("notes/post.md")?.docId).toBe("doc-1");
+    expect(
+      store.findGoogleDocsPublish("notes/post.md")?.assets[0].vaultPath,
+    ).toBe("attachments/image.png");
+
+    store.updateGoogleDocsSettings({
+      docsFolderId: "new-folder",
+      refreshToken: "",
+    });
+    expect(store.getGoogleDocsSettings().docsFolderId).toBe("new-folder");
+    expect(store.getGoogleDocsSettings().refreshToken).toBeUndefined();
+
+    store.upsertGoogleDocsPublish({
+      vaultPath: "notes/post.md",
+      docId: "doc-2",
+      docUrl: "https://docs.google.com/document/d/doc-2/edit",
+      assetFolderId: "assets-2",
+      lastUploaded: "2026-06-08T00:00:00Z",
+      assets: [],
+    });
+    expect(store.getGoogleDocsPublishes()).toHaveLength(1);
+    expect(store.findGoogleDocsPublish("notes/post.md")?.docId).toBe("doc-2");
+  });
 });
