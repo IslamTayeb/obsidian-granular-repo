@@ -1,7 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { describe, expect, it, vi } from "vitest";
 
 import {
   GoogleDocsMediaUpload,
+  GoogleDocsPublishError,
   GoogleDocsPublisher,
 } from "../src/services/google-docs-publisher";
 
@@ -329,5 +334,60 @@ describe("GoogleDocsPublisher", () => {
         expect.objectContaining({ updateTextStyle: expect.any(Object) }),
       ]),
     );
+  });
+
+  it("asks the user to re-authorize when Google rejects the refresh token", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "gvp-google-auth-"));
+    const credentialsPath = path.join(tempDir, "client.json");
+    await writeFile(
+      credentialsPath,
+      JSON.stringify({
+        installed: {
+          client_id: "client-id",
+          client_secret: "client-secret",
+        },
+      }),
+      "utf8",
+    );
+
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          error: "invalid_grant",
+          error_description: "Bad Request",
+        }),
+        {
+          status: 400,
+          statusText: "Bad Request",
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    try {
+      await expect(
+        new GoogleDocsPublisher().publish({
+          settings: {
+            credentialsPath,
+            refreshToken: "stale-refresh-token",
+            docsFolderId: "docs-folder",
+          },
+          title: "Post",
+          html: "<html><body><p>Post</p></body></html>",
+          vaultPath: "notes/post.md",
+          mediaUploads: [],
+          missingMedia: [],
+        }),
+      ).rejects.toThrow(
+        new GoogleDocsPublishError(
+          "Google Docs authorization expired or was revoked. Re-authorize Google Docs in Vault Publisher settings, then retry the upload.",
+        ),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      await rm(tempDir, { recursive: true, force: true });
+    }
   });
 });

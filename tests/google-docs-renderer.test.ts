@@ -20,6 +20,8 @@ describe("renderGoogleDocsMarkdown", () => {
         "```ts",
         "const value = 1;",
         "```",
+        "",
+        "A raw HTML <u>underline</u> beside *Markdown emphasis*.",
       ].join("\n"),
       { title: "Doc" },
     );
@@ -27,6 +29,8 @@ describe("renderGoogleDocsMarkdown", () => {
     expect(result.html).toContain("<h1>Heading</h1>");
     expect(result.html).toContain('<a href="https://example.com">link</a>');
     expect(result.html).toContain("<strong>bold</strong>");
+    expect(result.html).toContain("<u>underline</u>");
+    expect(result.html).toContain("<em>Markdown emphasis</em>");
     expect(result.html).toContain('<pre><code class="language-ts">');
     expect(result.html).toContain("<ul>");
     expect(result.html).toContain("<table>");
@@ -40,6 +44,7 @@ describe("renderGoogleDocsMarkdown", () => {
     expect(result.html).toContain(
       "GVP_CODE_BLOCK_0_START\nconst value = 1;\nGVP_CODE_BLOCK_0_END",
     );
+    expect(result.html).toContain("u{text-decoration:underline;}");
     expect(result.html).toContain(
       "h1,h2,h3,h4,h5,h6{line-height:1.2;margin:12pt 0 6pt 0;}",
     );

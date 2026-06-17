@@ -1796,10 +1796,12 @@ function isGoogleDocsHeadingStyle(value) {
   return typeof value === "string" && /^HEADING_[1-6]$/.test(value);
 }
 var GoogleDocsApiError = class extends Error {
-  constructor(message, code) {
+  constructor(message, code, googleError, googleErrorDescription) {
     super(message);
     this.name = "GoogleDocsApiError";
     this.code = code;
+    this.googleError = googleError;
+    this.googleErrorDescription = googleErrorDescription;
   }
 };
 function makeAuthUrl(config, redirectUri) {
@@ -1818,8 +1820,16 @@ async function fetchJson(url, init) {
   const text = await response.text();
   const data = text ? JSON.parse(text) : {};
   if (!response.ok) {
-    const message = data?.error_description ?? data?.error?.message ?? data?.error ?? response.statusText;
-    throw new GoogleDocsApiError(String(message), response.status);
+    const googleError = typeof data?.error === "string" ? data.error : void 0;
+    const googleErrorMessage = typeof data?.error?.message === "string" ? data.error.message : void 0;
+    const googleErrorDescription = typeof data?.error_description === "string" ? data.error_description : void 0;
+    const message = [googleError ?? googleErrorMessage, googleErrorDescription].filter(Boolean).join(": ") || response.statusText;
+    throw new GoogleDocsApiError(
+      message,
+      response.status,
+      googleError,
+      googleErrorDescription
+    );
   }
   return data;
 }
@@ -1843,16 +1853,26 @@ async function exchangeCodeForRefreshToken(config, code, redirectUri) {
   return data.refresh_token;
 }
 async function refreshAccessToken(config, refreshToken) {
-  const data = await fetchJson(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: config.client_id ?? "",
-      client_secret: config.client_secret ?? "",
-      refresh_token: refreshToken,
-      grant_type: "refresh_token"
-    })
-  });
+  let data;
+  try {
+    data = await fetchJson(GOOGLE_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: config.client_id ?? "",
+        client_secret: config.client_secret ?? "",
+        refresh_token: refreshToken,
+        grant_type: "refresh_token"
+      })
+    });
+  } catch (error) {
+    if (error instanceof GoogleDocsApiError && error.googleError === "invalid_grant") {
+      throw new GoogleDocsPublishError(
+        "Google Docs authorization expired or was revoked. Re-authorize Google Docs in Vault Publisher settings, then retry the upload."
+      );
+    }
+    throw error;
+  }
   if (!data.access_token) {
     throw new GoogleDocsPublishError(
       "Google did not return an access token. Re-authorize Google Docs in settings."
@@ -4078,6 +4098,7 @@ var GOOGLE_DOCS_IMPORT_STYLE = [
   "blockquote{color:#5f6368;margin:0 0 6pt 18pt;}",
   "pre{margin:0 0 6pt 0;white-space:pre-wrap;background-color:#f1f3f4;padding:6pt;}",
   'code{font-family:"Courier New",monospace;font-size:10pt;}',
+  "u{text-decoration:underline;}",
   "table{border-collapse:collapse;margin:0 0 6pt 0;}",
   "th,td{border:1px solid #dadce0;padding:4pt 6pt;}",
   "img{max-width:100%;}"

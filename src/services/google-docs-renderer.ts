@@ -57,6 +57,7 @@ const GOOGLE_DOCS_IMPORT_STYLE = [
   "blockquote{color:#5f6368;margin:0 0 6pt 18pt;}",
   "pre{margin:0 0 6pt 0;white-space:pre-wrap;background-color:#f1f3f4;padding:6pt;}",
   'code{font-family:"Courier New",monospace;font-size:10pt;}',
+  "u{text-decoration:underline;}",
   "table{border-collapse:collapse;margin:0 0 6pt 0;}",
   "th,td{border:1px solid #dadce0;padding:4pt 6pt;}",
   "img{max-width:100%;}",
